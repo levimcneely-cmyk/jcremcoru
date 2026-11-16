@@ -205,14 +205,15 @@
     buildGroups();
   }
 
-  function replaceCurrent(values) {
-    if (!S.current) return;
-    S.data.tabs[S.current.name] = values;
-    var fresh = parseCycle(S.current.name, values);
-    var i = S.cycles.indexOf(S.current);
-    S.cycles[i] = fresh; S.byName[fresh.name] = fresh; S.current = fresh;
+  function replaceTab(name, values) {
+    var old = S.byName[name]; if (!old) return;
+    S.data.tabs[name] = values;
+    var fresh = parseCycle(name, values);
+    S.cycles[S.cycles.indexOf(old)] = fresh; S.byName[name] = fresh;
+    if (S.current === old) S.current = fresh;
     buildGroups();
   }
+  function replaceCurrent(values) { if (S.current) replaceTab(S.current.name, values); }
 
   // ---------- lock / unlock ----------
   function lock(msg) {
@@ -316,18 +317,18 @@
     box.innerHTML = '<p class="muted small" style="margin:0 0 10px">' + plural(hits.length, 'match', 'matches') + '</p><div class="results">' + hits.slice(0, 40).map(orgCard).join('') + '</div>';
   }
 
-  function orgCard(g) {
+  function orgCard(g, inModal) {
     var cls = g.nFunded ? 'is-funded' : (g.pending ? 'is-pending' : '');
     var headline = g.nFunded ? 'Funded ' + plural(g.nFunded, 'time') : (g.pending ? 'Pending this cycle' : 'Applied, not funded');
     var meta = plural(g.apps.length, 'application') + (g.alt.length ? ' · also listed as ' + g.alt.map(esc).join(', ') : '');
     return '<article class="org ' + cls + '">' +
       '<div class="org-head"><div><h3>' + esc(g.name) + '</h3><div class="org-meta">' + meta + '</div></div>' +
-      '<div class="org-total"><b class="num">' + (g.nFunded ? fmt(g.total) : '—') + '</b><span class="small muted">' + headline + '</span></div></div>' +
+      '<div class="org-total"><b class="num">' + (g.nFunded ? fmt(Math.round(g.total)) : '—') + '</b><span class="small muted">' + headline + '</span></div></div>' +
       '<div class="apps">' + g.apps.map(function (a) {
         var st = status(a.it, a.cyc);
         return '<div class="app"><a class="cyc" href="#/cycles/' + encodeURIComponent(a.cyc.name) + '">' + a.cyc.label + '</a>' +
           '<div class="proj"><b>' + esc(a.it.project || '—') + '</b> <span class="muted small">· asked ' + fmt(a.it.requested) + '</span></div>' +
-          '<div class="amt num">' + (a.it.funded > 0 ? '<b>' + fmt(a.it.funded) + '</b> ' : '') + chip(st) + '</div>' +
+          '<div class="amt num">' + (a.it.funded > 0 ? '<b>' + fmt(Math.round(a.it.funded)) + '</b> ' : '') + chip(st) + '</div>' +
           (a.it.notes ? '<div class="note">' + esc(a.it.notes) + '</div>' : '') + '</div>';
       }).join('') + '</div></article>';
   }
@@ -547,15 +548,31 @@
     if (!top.length) return '<p class="muted">No grants yet.</p>';
     var max = top[0].total;
     return '<div class="hbars">' + top.map(function (g) {
-      return '<div class="hbar"><a class="name" href="#/search" data-q="' + esc(g.name) + '" title="' + esc(g.name) + '">' + esc(g.name) + '</a>' +
-        '<div class="track"><div class="fill" style="width:' + (g.total / max * 100) + '%"></div></div><div class="v">' + fmt(g.total) + '</div></div>';
+      return '<button type="button" class="hbar" data-org="' + esc(g.key) + '"><span class="name" title="' + esc(g.name) + '">' + esc(g.name) + '</span>' +
+        '<span class="track"><span class="fill" style="width:' + (g.total / max * 100) + '%"></span></span><span class="v">' + fmt(Math.round(g.total)) + '</span></button>';
     }).join('') + '</div>';
   }
 
   document.addEventListener('click', function (e) {
     var a = e.target.closest && e.target.closest('a[data-q]');
     if (a) { S.q = a.getAttribute('data-q'); }
+    var o = e.target.closest && e.target.closest('[data-org]');
+    if (o) { var g = S.groupByKey[o.getAttribute('data-org')]; if (g) openModal(orgCard(g, true)); }
   });
+
+  // ---------- modal (bottom sheet on phones, centered on desktop) ----------
+  function openModal(html, wide) {
+    var sh = $('#sheet');
+    sh.innerHTML = '<div class="sheet-panel modal' + (wide ? ' wide' : '') + '"><button type="button" class="modal-x" aria-label="Close">×</button>' + html + '</div>';
+    sh.hidden = false; $('#toast').hidden = true; hideTip();
+    function close() { sh.hidden = true; sh.innerHTML = ''; document.removeEventListener('keydown', esc_); }
+    function esc_(e) { if (e.key === 'Escape') close(); }
+    document.addEventListener('keydown', esc_);
+    $('.modal-x', sh).addEventListener('click', close);
+    sh.onclick = function (e) { if (e.target === sh) close(); };
+    $$('a[href^="#"]', sh).forEach(function (a) { a.addEventListener('click', close); });
+    return { el: sh, close: close };
+  }
 
   // ---------- CYCLES ----------
   function renderCycles(v, name) {
@@ -612,7 +629,7 @@
     }).join('');
     var body = rows.map(function (it) {
       var st = status(it, cyc);
-      return '<tr class="' + st + '">' + cols.map(function (i) {
+      return '<tr class="' + st + ' click" data-row="' + it.row + '" tabindex="0">' + cols.map(function (i) {
         var v = String(it.cells[i] == null ? '' : it.cells[i]).trim();
         if (i === C.fund) return '<td class="r num">' + (v ? esc(v) : (st === 'pending' || st === 'discuss' ? chip(st) : '')) + '</td>';
         if (moneyCols.indexOf(i) >= 0) return '<td class="r num">' + esc(v) + '</td>';
@@ -641,6 +658,11 @@
       }).join('') + '</tr>';
     });
     $('#tw').innerHTML = '<table class="sheet-t"><thead><tr>' + th + '</tr></thead><tbody>' + body + '</tbody><tfoot>' + foot + '</tfoot></table>';
+    $$('#tw tbody tr[data-row]').forEach(function (tr) {
+      function open() { var it = cyc.items.filter(function (x) { return x.row === +tr.getAttribute('data-row'); })[0]; if (it) openRow(cyc.name, it.row); }
+      tr.addEventListener('click', open);
+      tr.addEventListener('keydown', function (e) { if (e.key === 'Enter') open(); });
+    });
     $$('#tw th').forEach(function (h) {
       h.addEventListener('click', function () {
         var c = +h.getAttribute('data-c');
@@ -651,6 +673,44 @@
     });
   }
 
+  // ---------- row detail + notes (any cycle) ----------
+  function openRow(cycName, row) {
+    var cyc = S.byName[cycName]; if (!cyc) return;
+    var it = cyc.items.filter(function (x) { return x.row === row; })[0]; if (!it) return;
+    var st = status(it, cyc), C = cyc.C;
+    var noteRaw = C.notes >= 0 ? String(it.cells[C.notes] || '').trim() : '';
+    var extras = [];
+    for (var x = C.notes + 1; x <= cyc.maxCol; x++) { var v = String(it.cells[x] || '').trim(); if (v) extras.push('<div><span class="label">' + esc(cyc.head[x] || 'More notes') + '</span> ' + esc(v) + '</div>'); }
+    var g = S.groupByKey[canon(it.org)];
+    var past = g ? g.apps.filter(function (a) { return !(a.cyc === cyc && a.it.row === it.row); }) : [];
+    var share = it.cost ? Math.round(it.requested / it.cost * 100) : null;
+    var html = '<span class="eyebrow">' + cyc.label + ' · row ' + it.row + '</span><h3 class="m-title">' + esc(it.org) + '</h3>' +
+      '<div class="m-proj">' + esc(it.project) + (it.ref ? ' <span class="muted small">· Reference: ' + esc(it.ref) + '</span>' : '') + '</div>' +
+      '<div class="m-facts"><div><span class="label">Requested</span><b class="num">' + fmt(it.requested) + '</b></div>' +
+      '<div><span class="label">Project cost</span><b class="num">' + (it.cost != null ? fmt(it.cost) : esc(it.costRaw || '—')) + '</b>' + (share != null && share <= 100 ? '<small class="muted">' + share + '% of project</small>' : '') + '</div>' +
+      '<div><span class="label">Funded</span><b class="num">' + (it.funded > 0 ? fmt(it.funded) : '—') + '</b>' + chip(st) + '</div></div>' +
+      (extras.length ? '<div class="m-extra">' + extras.join('') + '</div>' : '') +
+      (C.notes >= 0 ? '<label class="fld"><span>Notes</span><textarea id="mnote" rows="3" placeholder="Add a note — saves to the Notes column">' + esc(noteRaw) + '</textarea></label>' +
+        '<p class="err-msg" id="merr"></p><div class="sheet-actions">' +
+        (cyc === S.current && it.funded == null ? '<a class="btn btn-outline" href="#/decide" id="mdeck">Decide</a>' : '<span></span>') +
+        '<button class="btn btn-blue" type="button" id="msave">Save note</button></div>' : '') +
+      (past.length ? '<div class="m-hist"><span class="label">Other applications from this organization</span>' + past.map(function (a) {
+          var s2 = status(a.it, a.cyc);
+          return '<div class="m-h"><span>' + a.cyc.label + '</span><span>' + esc(a.it.project) + '</span><span class="num">' + (a.it.funded > 0 ? fmt(Math.round(a.it.funded)) + ' ' : '') + chip(s2) + '</span></div>';
+        }).join('') + '</div>' : '<p class="small muted" style="margin-top:14px">No other applications from this organization.</p>');
+    var m = openModal(html);
+    var deck = $('#mdeck'); if (deck) deck.addEventListener('click', function () { S.focusRow = it.row; });
+    var save = $('#msave');
+    if (save) save.addEventListener('click', function () {
+      var note = $('#mnote').value.trim();
+      save.disabled = true; save.textContent = 'Saving…';
+      api('note', { tab: cyc.name, row: it.row, org: it.orgRaw, note: note }).then(function (res) {
+        replaceTab(cyc.name, res.values);
+        m.close(); route(); toast('Note saved · ' + it.org);
+      }).catch(function (err) { $('#merr').textContent = err.message; save.disabled = false; save.textContent = 'Save note'; });
+    });
+  }
+
   // ---------- DECIDE (current cycle) ----------
   function renderDecide(v) {
     var cyc = S.current;
@@ -658,8 +718,9 @@
     var pending = cyc.items.filter(function (it) { return it.funded == null; });
     var decided = cyc.items.filter(function (it) { return it.funded != null; });
     var keys = getSkips(cyc);
-    var fresh = pending.filter(function (it) { return keys.indexOf(itemKey(it)) < 0; });
-    var skipped = keys.map(function (k) { return pending.filter(function (it) { return itemKey(it) === k; })[0]; }).filter(Boolean);
+    var abc = function (a, b) { return a.org.localeCompare(b.org, 'en', { sensitivity: 'base' }); };
+    var fresh = pending.filter(function (it) { return keys.indexOf(itemKey(it)) < 0; }).sort(abc);
+    var skipped = pending.filter(function (it) { return keys.indexOf(itemKey(it)) >= 0; }).sort(abc);
     var it = null;
     if (S.focusRow) { it = pending.filter(function (x) { return x.row === S.focusRow; })[0] || null; S.focusRow = null; }
     it = it || fresh[0] || skipped[0];

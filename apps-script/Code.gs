@@ -5,7 +5,7 @@
  * - Every request must carry the passcode (stored in Script Properties, never in code).
  * - Set it from the Sheet menu: ORU Site → Set passcode…
  * - 10 wrong tries locks the site for 15 minutes.
- * - Writes allowed: CURRENT_TAB "Amount Funded" / "Notes" cells, and the committee rows on BOARD_TAB.
+ * - Writes allowed: CURRENT_TAB "Amount Funded", the "Notes" cell on any cycle tab, and the committee rows on BOARD_TAB.
  */
 
 const CURRENT_TAB = '2026 October';      // ← change each cycle (e.g. '2027 April')
@@ -47,6 +47,7 @@ function doPost(e) {
     if (body.action === 'data') return json_({ ok: true, data: readAll_() });
     if (body.action === 'decide') return json_(decide_(body));
     if (body.action === 'board') return json_(board_(body));
+    if (body.action === 'note') return json_(note_(body));
     return json_({ ok: false, error: 'Unknown action' });
   } catch (err) {
     return json_({ ok: false, error: String((err && err.message) || err) });
@@ -113,6 +114,33 @@ function decide_(b) {
     if (cNote && typeof b.note === 'string') sh.getRange(row, cNote).setValue(b.note);
     SpreadsheetApp.flush();
     return { ok: true, tab: CURRENT_TAB, values: sh.getDataRange().getDisplayValues() };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Save the Notes cell for one application row on any cycle tab. */
+function note_(b) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const tab = String(b.tab || '');
+    if (!CYCLE_RE.test(tab)) throw new Error('Not a cycle tab');
+    const sh = SpreadsheetApp.getActive().getSheetByName(tab);
+    if (!sh) throw new Error('Tab "' + tab + '" not found');
+    const head = sh.getRange(1, 1, 1, sh.getLastColumn()).getDisplayValues()[0].map(function (h) { return String(h).trim().toLowerCase(); });
+    const cOrg = head.indexOf('organization') + 1, cNote = head.indexOf('notes') + 1;
+    if (!cOrg || !cNote) throw new Error('No Notes column on this tab');
+    const row = Number(b.row);
+    if (!(row >= 2)) throw new Error('Bad row');
+    const colA = sh.getRange(1, 1, sh.getLastRow(), 1).getDisplayValues();
+    for (let i = 1; i < colA.length; i++) {
+      if (/^total/i.test(String(colA[i][0]).trim())) { if (row > i) throw new Error('Not an application row'); break; }
+    }
+    if (String(sh.getRange(row, cOrg).getDisplayValue()).trim() !== String(b.org || '').trim()) throw new Error('The sheet changed under you — refresh and try again.');
+    sh.getRange(row, cNote).setValue(String(b.note == null ? '' : b.note).slice(0, 2000));
+    SpreadsheetApp.flush();
+    return { ok: true, tab: tab, values: sh.getDataRange().getDisplayValues() };
   } finally {
     lock.releaseLock();
   }
