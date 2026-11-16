@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Operation Round-Up · JCREMC Advisory Board</title>
+<meta name="theme-color" content="#3e5885">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Round-Up">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@600;700;800&family=Nunito+Sans:opsz,wght@6..12,400;6..12,600;6..12,700&family=Barlow:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="lock" class="lock" hidden>
+  <form class="lock-card" id="lockForm" autocomplete="off">
+    <p class="eyebrow">JCREMC Community Fund</p>
+    <h1>Operation Round&#8209;Up</h1>
+    <p class="lock-sub">Advisory board workspace</p>
+    <label for="pass" class="sr">Passcode</label>
+    <input id="pass" type="password" inputmode="numeric" placeholder="Passcode" autocomplete="current-password" required>
+    <label class="remember"><input type="checkbox" id="remember" checked> Remember on this device</label>
+    <button class="btn btn-blue" type="submit">Unlock</button>
+    <p class="lock-msg" id="lockMsg" role="status" aria-live="polite"></p>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header class="top">
+    <div class="wrap top-row">
+      <a class="brand" href="#/search">
+        <span class="eyebrow">JCREMC Community Fund</span>
+        <span class="brand-title">Operation Round&#8209;Up</span>
+      </a>
+      <nav class="nav" id="nav">
+        <a href="#/search" data-r="search">Search</a>
+        <a href="#/dashboard" data-r="dashboard">Dashboard</a>
+        <a href="#/cycles" data-r="cycles">Cycles</a>
+        <a href="#/decide" data-r="decide">Decide <span class="badge" data-pending></span></a>
+      </nav>
+      <div class="top-actions">
+        <button class="icon-btn" id="refreshBtn" title="Refresh from the Sheet" aria-label="Refresh">&#8635;</button>
+        <button class="icon-btn" id="lockBtn" title="Lock" aria-label="Lock">&#128274;</button>
+      </div>
+    </div>
+    <div class="stripe"></div>
+  </header>
+
+  <main id="view" class="wrap"></main>
+
+  <footer class="herd">
+    <div class="wrap">
+      <a href="https://herdcoindy.com/" target="_blank" rel="noopener"><img src="assets/herd-icon.png" alt="The Herd Co."></a>
+      <span>&copy; <span id="yr">2026</span> The Herd Co. · Greenwood / Indianapolis, Indiana</span>
+    </div>
+  </footer>
+
+  <nav class="tabbar" id="tabbar">
+    <a href="#/search" data-r="search"><span>&#128269;</span>Search</a>
+    <a href="#/dashboard" data-r="dashboard"><span>&#9638;</span>Dashboard</a>
+    <a href="#/cycles" data-r="cycles"><span>&#9776;</span>Cycles</a>
+    <a href="#/decide" data-r="decide"><span>&#10003;</span>Decide <i class="badge" data-pending></i></a>
+  </nav>
+</div>
+
+<div id="sheet" class="sheet" hidden></div>
+<div id="tip" class="tip" hidden></div>
+<div id="toast" class="toast" hidden></div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
