@@ -5,7 +5,7 @@ Private workspace for the ORU Advisory Board chair. It reads the **"Funds Reques
 - **Search** (landing): has an organization been funded? Searches every cycle tab and groups spelling variants of the same org.
 - **Dashboard**: total given, grants per cycle, committee roster and officers, top recipients.
 - **Cycles**: each cycle tab laid out the way it is in the Sheet, with footer totals, filters and sortable columns.
-- **Decide**: the current cycle as a card deck. **Fund** writes the full request to *Amount Funded*. **Partially fund** asks for an amount and an optional note. **Skip** writes $0 (not funded). Each decision has Undo and a **Change** button.
+- **Decide**: the current cycle as a card deck. **Fund** writes the full request to *Amount Funded*. **Partially fund** asks for an amount and an optional note. **Skip** leaves Amount Funded blank and moves the app to a "Discuss at board meeting" pile (saved on this device). A small "Not funding this one" link writes $0. Each decision has Undo and a **Change** button.
 
 The repo holds no grant data and no passcode. Data only comes back from the Apps Script when the right passcode is sent, so it's fine if this repo is ever made public.
 
