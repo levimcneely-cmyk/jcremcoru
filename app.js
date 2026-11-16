@@ -583,10 +583,10 @@
       return '<a href="#/cycles/' + encodeURIComponent(c.name) + '" class="' + (c === cyc ? 'on ' : '') + (c === S.current ? 'cur' : '') + '">' + c.label + '</a>';
     }).join('') + '</div>';
     var isCur = cyc === S.current;
-    var tiles = '<div class="tiles">' +
-      tile('Requested', fmt(cyc.requestedSum), plural(cyc.items.length, 'application')) +
-      tile('Funded', fmt(cyc.fundedSum), cyc.nFunded + ' of ' + cyc.items.length + ' funded' + (isCur && cyc.nPending ? ' · ' + cyc.nPending + ' pending' : ''), true) +
-      (cyc.budget != null ? tile('Budget', fmt(cyc.budget), cyc.left != null ? (cyc.left < 0 ? 'Over by ' + fmt(-cyc.left) : fmt(cyc.left) + ' left') : '') : '') +
+    var tiles = '<div class="tiles three">' +
+      tile('Requested', fmt(Math.round(cyc.requestedSum)), plural(cyc.items.length, 'application')) +
+      tile('Funded', fmt(Math.round(cyc.fundedSum)), cyc.nFunded + ' of ' + cyc.items.length + ' funded' + (isCur && cyc.nPending ? ' · ' + cyc.nPending + ' pending' : ''), true) +
+      (cyc.budget != null ? tile('Budget', fmt(Math.round(cyc.budget)), cyc.left != null ? (cyc.left < 0 ? 'Over by ' + fmt(Math.round(-cyc.left)) : fmt(Math.round(cyc.left)) + ' left') : '') : '') +
       '</div>';
     v.innerHTML = pick +
       '<div class="section-head"><h2>' + cyc.label + ' <span class="muted small" style="font-weight:400">· “' + esc(cyc.name) + '” tab</span></h2>' +
@@ -625,6 +625,7 @@
         return String(x).localeCompare(String(y)) * dir;
       });
     }
+    if (isPhone()) { drawList(cyc, rows); return; }
     var th = cols.map(function (i) {
       var arrow = S.sort && S.sort.col === i ? (S.sort.dir > 0 ? ' ▲' : ' ▼') : '';
       return '<th data-c="' + i + '" class="' + (moneyCols.indexOf(i) >= 0 ? 'r' : '') + '">' + esc(headLabel(i)) + '<span class="arr">' + arrow + '</span></th>';
@@ -660,6 +661,7 @@
         return '<td></td>';
       }).join('') + '</tr>';
     });
+    $('#tw').className = 'table-wrap';
     $('#tw').innerHTML = '<table class="sheet-t"><thead><tr>' + th + '</tr></thead><tbody>' + body + '</tbody><tfoot>' + foot + '</tfoot></table>';
     $$('#tw tbody tr[data-row]').forEach(function (tr) {
       function open() { var it = cyc.items.filter(function (x) { return x.row === +tr.getAttribute('data-row'); })[0]; if (it) openRow(cyc.name, it.row); }
@@ -674,6 +676,45 @@
         drawTable(cyc);
       });
     });
+  }
+
+  function isPhone() { return window.matchMedia('(max-width: 760px)').matches; }
+  var phoneMQ = window.matchMedia('(max-width: 760px)');
+  (phoneMQ.addEventListener ? phoneMQ.addEventListener.bind(phoneMQ, 'change') : phoneMQ.addListener.bind(phoneMQ))(function () { if (S.data) route(); });
+
+  // Phone layout for a cycle: one card per application instead of a wide table.
+  function drawList(cyc, rows) {
+    var dd = S.docs[cyc.name];
+    var sortSel = '<div class="list-sort"><label>Sort <select id="lsort">' +
+      [['', 'Sheet order'], ['org', 'Organization'], ['req', 'Requested'], ['fund', 'Funded']].map(function (o) {
+        var cur = !S.sort ? '' : S.sort.col === cyc.C.org ? 'org' : S.sort.col === cyc.C.req ? 'req' : S.sort.col === cyc.C.fund ? 'fund' : '';
+        return '<option value="' + o[0] + '"' + (cur === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+      }).join('') + '</select></label><span class="small muted">' + plural(rows.length, 'application') + '</span></div>';
+    var body = rows.map(function (it) {
+      var st = status(it, cyc), o = dd && dd.status === 'ok' && dd.byRow[it.row];
+      return '<button type="button" class="lrow ' + st + '" data-row="' + it.row + '">' +
+        '<span class="l-main"><b>' + esc(it.org) + '</b><span class="l-proj">' + esc(it.project || '—') + '</span>' +
+        '<span class="l-meta">' + esc(it.ref) + (o ? ' · 📎' + o.files.length : '') + '</span>' +
+        (it.notes ? '<span class="l-note">' + esc(it.notes) + '</span>' : '') + '</span>' +
+        '<span class="l-amt"><span class="num l-req">asked ' + fmt(it.requested) + '</span>' +
+        (it.funded > 0 ? '<b class="num">' + fmt(it.funded) + '</b>' : '') + chip(st) + '</span></button>';
+    }).join('') || '<div class="empty">Nothing matches.</div>';
+    var foot = '<div class="lfoot"><div><span>Total requested</span><b class="num">' + fmt(cyc.requestedSum, true) + '</b></div>' +
+      '<div><span>Total funded</span><b class="num">' + fmt(cyc.fundedSum, true) + '</b></div>' +
+      cyc.footer.map(function (f) {
+        var val = f.value;
+        if (cyc === S.current && /left to fund/i.test(f.label) && cyc.left != null) val = cyc.left;
+        if (cyc === S.current && /to date/i.test(f.label)) val = totals().given;
+        return '<div><span>' + esc(f.label) + (f.note ? ' <i>(' + esc(f.note) + ')</i>' : '') + '</span><b class="num">' + (val != null ? fmt(val, true) : '') + '</b></div>';
+      }).join('') + '</div>';
+    var tw = $('#tw'); tw.className = 'list-wrap';
+    tw.innerHTML = sortSel + '<div class="lrows">' + body + '</div>' + foot;
+    $('#lsort').addEventListener('change', function (e) {
+      var v = e.target.value, C = cyc.C;
+      S.sort = v === 'org' ? { col: C.org, dir: 1 } : v === 'req' ? { col: C.req, dir: -1 } : v === 'fund' ? { col: C.fund, dir: -1 } : null;
+      drawTable(cyc);
+    });
+    $$('.lrow', tw).forEach(function (b) { b.addEventListener('click', function () { openRow(cyc.name, +b.getAttribute('data-row')); }); });
   }
 
   // ---------- application files (from the cycle's shared Drive folder) ----------
@@ -726,7 +767,7 @@
     if (/^ORU-/i.test(n)) return 'Application';
     return n.replace(/\.(pdf|docx?|xlsx?)$/i, '').replace(/[-_]+/g, ' ').replace(/\s+\(\d+\)$/, '').trim();
   }
-  function docsHtml(cyc, it) {
+  function docsHtml(cyc, it, compact) {
     var d = S.docs[cyc.name];
     if (!d || d.status === 'loading') return '<div class="docs"><span class="label">Application files</span><div class="docs-wait">Loading files from Drive…</div></div>';
     if (d.status === 'err') return '<div class="docs"><span class="label">Application files</span><div class="docs-wait">Couldn’t load files: ' + esc(d.error) + '</div></div>';
@@ -735,16 +776,21 @@
     if (!o) return '<div class="docs"><span class="label">Application files</span><div class="docs-wait">No matching folder. <a href="' + esc(d.folder.url) + '" target="_blank" rel="noopener">Open the ' + cyc.label + ' folder</a></div></div>';
     var files = o.files.slice().sort(function (a, b) { return (/^ORU-/i.test(b.name) ? 1 : 0) - (/^ORU-/i.test(a.name) ? 1 : 0) || a.name.localeCompare(b.name); });
     return '<div class="docs"><div class="docs-head"><span class="label">Application files (' + files.length + ')</span><a class="small" href="' + esc(o.url) + '" target="_blank" rel="noopener">Folder ↗</a></div>' +
-      '<div class="docs-list">' + files.map(function (f) {
-        var ic = fileIcon(f), main = /^ORU-/i.test(f.name);
-        return '<a class="doc' + (main ? ' main' : '') + '" href="' + esc(f.url) + '" target="_blank" rel="noopener" title="' + esc(f.name) + '">' +
-          '<span class="ic ic-' + ic.toLowerCase() + '">' + ic + '</span><span class="dn">' + esc(fileLabel(f)) + '</span><span class="go">↗</span></a>';
-      }).join('') + '</div></div>';
+      '<div class="docs-list">' + (function () {
+        function one(f) {
+          var ic = fileIcon(f), main = /^ORU-/i.test(f.name);
+          return '<a class="doc' + (main ? ' main' : '') + '" href="' + esc(f.url) + '" target="_blank" rel="noopener" title="' + esc(f.name) + '">' +
+            '<span class="ic ic-' + ic.toLowerCase() + '">' + ic + '</span><span class="dn">' + esc(fileLabel(f)) + '</span><span class="go">↗</span></a>';
+        }
+        // on the decide card, keep the buttons near the top: show the application, tuck the rest behind a toggle
+        if (compact && files.length > 2) return one(files[0]) + '<details class="more-docs"><summary>' + (files.length - 1) + ' more files</summary><div class="docs-list">' + files.slice(1).map(one).join('') + '</div></details>';
+        return files.map(one).join('');
+      })() + '</div></div>';
   }
-  function fillDocs(cyc, it, el) {
+  function fillDocs(cyc, it, el, compact) {
     if (!el) return;
-    el.innerHTML = docsHtml(cyc, it);
-    loadDocs(cyc).then(function () { if (document.body.contains(el)) el.innerHTML = docsHtml(cyc, it); });
+    el.innerHTML = docsHtml(cyc, it, compact);
+    loadDocs(cyc).then(function () { if (document.body.contains(el)) el.innerHTML = docsHtml(cyc, it, compact); });
   }
 
   // ---------- row detail + notes (any cycle) ----------
@@ -829,7 +875,7 @@
     }
     v.innerHTML = html;
     setSync();
-    if (it) fillDocs(cyc, it, $('#ddocs'));
+    if (it) fillDocs(cyc, it, $('#ddocs'), true);
     if (it) {
       $('#bFund').addEventListener('click', function () { decide(it, it.requested); });
       $('#bPart').addEventListener('click', function () { openPartial(it); });
@@ -933,7 +979,7 @@
   function setSync() {
     var s = $('#sync'); if (!s) return;
     s.className = 'sync' + (lastErr ? ' err' : '');
-    s.textContent = inflight ? 'Saving to Sheet…' : (lastErr ? 'Last save failed' : 'Saved to Sheet');
+    s.textContent = inflight ? 'Saving to Sheet…' : (lastErr ? 'Last save failed' : (S.savedOnce ? 'Saved to Sheet ✓' : ''));
   }
 
   function decide(it, amount, note, isUndo) {
@@ -957,7 +1003,7 @@
     if (typeof note === 'string') payload.note = note;
     queue = queue.then(function () {
       return api('decide', payload).then(function (res) {
-        inflight--;
+        inflight--; S.savedOnce = true;
         if (!inflight && res.values) {
           var onDecide = /decide/.test(location.hash) && $('#sheet').hidden;
           replaceCurrent(res.values);
