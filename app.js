@@ -144,7 +144,7 @@
   function chip(st) { return '<span class="chip ' + st + '">' + STATUS_TXT[st] + '</span>'; }
 
   function parseBoard(values) {
-    var out = { members: [], positions: [], quote: '' };
+    var out = { members: [], positions: [], quote: '', memberCol: 2, posCol: 2 };
     if (!values) return out;
     var hr = -1, hc = -1;
     values.forEach(function (r, i) { if (hr < 0) { var j = r.map(function (c) { return String(c).trim(); }).indexOf('District'); if (j >= 0) { hr = i; hc = j; } } });
@@ -152,16 +152,18 @@
       for (var i = hr + 1; i < values.length; i++) {
         var r = values[i] || [];
         if (!String(r[hc] || '').trim()) break;
-        out.members.push({ district: String(r[hc]).trim(), name: String(r[hc + 1] || '').trim(), phone: String(r[hc + 2] || '').trim(), email: String(r[hc + 3] || '').trim() });
+        out.members.push({ row: i + 1, col: hc + 1, district: String(r[hc]).trim(), name: String(r[hc + 1] || '').trim(), phone: String(r[hc + 2] || '').trim(), email: String(r[hc + 3] || '').trim() });
       }
     }
+    if (hc >= 0) out.memberCol = hc + 1;
     var pr = -1;
     values.forEach(function (r, i) { if (pr < 0 && r.some(function (c) { return String(c).trim() === 'Positions'; })) pr = i; });
     if (pr >= 0) {
       for (var p = pr + 1; p < values.length; p++) {
-        var cells = (values[p] || []).map(function (c) { return String(c).trim(); }).filter(Boolean);
-        if (!cells.length) break;
-        out.positions.push({ title: cells[0], name: cells[1] || '' });
+        var rr = (values[p] || []).map(function (c) { return String(c).trim(); });
+        var tc = -1; for (var z = 0; z < rr.length; z++) if (rr[z]) { tc = z; break; }
+        if (tc < 0) break;
+        out.positions.push({ row: p + 1, col: tc + 1, title: rr[tc], name: rr[tc + 1] || '' });
       }
     }
     values.forEach(function (r) { r.forEach(function (c) { c = String(c).trim(); if (/^["“]/.test(c) && c.length > 30) out.quote = c.replace(/^["“]|["”]$/g, ''); }); });
@@ -374,6 +376,7 @@
       '<section class="section card"><div class="section-head"><h3>Top recipients</h3><span class="muted small">Total funded, all cycles</span></div>' + topHtml() + '</section>';
     v.innerHTML = html;
     wireChart(v);
+    wireBoard(v);
   }
 
   function niceMax(n) {
@@ -434,24 +437,109 @@
       var n = cur.items.filter(function (it) { var r = it.ref.toLowerCase(); return r === full || r === fn || r.split(/\s+/)[0] === fn; }).length;
       return n ? plural(n, 'app') + '<br>' + cur.short : '';
     }
-    var members = b.members.map(function (m) {
+    var members = b.members.map(function (m, idx) {
       var open = /^open$/i.test(m.name) || !m.name;
       var d = /^\d+$/.test(m.district) ? 'Dist ' + m.district : m.district;
       return '<div class="member' + (open ? ' open' : '') + '"><div class="d">' + esc(d) + '</div>' +
         '<div class="who">' + (open ? 'Open seat' : '<b>' + esc(m.name) + '</b><div class="contact">' +
           (m.phone ? '<a href="tel:' + esc(m.phone.replace(/[^\d+]/g, '')) + '">' + esc(m.phone) + '</a>' : '') +
           (m.phone && m.email ? ' · ' : '') + (m.email ? '<a href="mailto:' + esc(m.email) + '">' + esc(m.email) + '</a>' : '') + '</div>') +
-        '</div><div class="load">' + load(m.name) + '</div></div>';
+        '</div><div class="load">' + load(m.name) + '</div>' +
+        '<button class="edit-btn" data-edit-m="' + idx + '" aria-label="Edit ' + esc(m.name || 'seat') + '">Edit</button></div>';
     }).join('');
     var seats = b.members.length, filled = b.members.filter(function (m) { return m.name && !/^open$/i.test(m.name); }).length;
-    var pos = b.positions.map(function (p) {
+    var pos = b.positions.map(function (p, idx) {
       var vac = !p.name || /^vacant$/i.test(p.name);
-      return '<div class="pos"><span>' + esc(p.title) + '</span>' + (vac ? '<span class="vacant">Vacant</span>' : '<b>' + esc(p.name) + '</b>') + '</div>';
+      return '<div class="pos"><span>' + esc(p.title) + '</span><span class="pos-r">' + (vac ? '<span class="vacant">Vacant</span>' : '<b>' + esc(p.name) + '</b>') +
+        '<button class="edit-btn" data-edit-p="' + idx + '" aria-label="Edit ' + esc(p.title) + '">Edit</button></span></div>';
     }).join('');
     return '<div class="card"><div class="section-head" style="margin-bottom:4px"><h3>Representatives</h3><span class="small muted">' + filled + ' of ' + seats + ' seats filled</span></div>' +
-      '<div class="board">' + (members || '<p class="muted">No members found.</p>') + '</div></div>' +
+      '<div class="board">' + (members || '<p class="muted">No members found.</p>') + '</div>' +
+      (b.members.length ? '<button class="btn btn-ghost btn-sm add-btn" id="addMember">+ Add member</button>' : '') + '</div>' +
       '<div class="card"><h3 style="margin-bottom:6px">Officers</h3><div class="positions">' + (pos || '<p class="muted">—</p>') + '</div>' +
+      (b.positions.length ? '<button class="btn btn-ghost btn-sm add-btn" id="addOfficer">+ Add officer</button>' : '') +
       (b.quote ? '<blockquote>“' + esc(b.quote) + '”</blockquote>' : '') + '</div>';
+  }
+
+  // ---------- committee editing (writes to the ORU Advisory Board tab) ----------
+  function wireBoard(v) {
+    $$('[data-edit-m]', v).forEach(function (b) { b.addEventListener('click', function () { editMember(S.board.members[+b.getAttribute('data-edit-m')]); }); });
+    $$('[data-edit-p]', v).forEach(function (b) { b.addEventListener('click', function () { editOfficer(S.board.positions[+b.getAttribute('data-edit-p')]); }); });
+    var am = $('#addMember', v); if (am) am.addEventListener('click', function () { editMember(null); });
+    var ao = $('#addOfficer', v); if (ao) ao.addEventListener('click', function () { editOfficer(null); });
+  }
+
+  function field(id, label, val, attrs) {
+    return '<label class="fld"><span>' + label + '</span><input id="' + id + '" value="' + esc(val || '') + '" ' + (attrs || '') + '></label>';
+  }
+
+  function boardSheet(title, sub, fields, canRemove, onSave, onRemove) {
+    var sh = $('#sheet');
+    sh.innerHTML = '<form class="sheet-panel" id="bform" autocomplete="off"><h3>' + esc(title) + '</h3><div class="muted small">' + sub + '</div>' +
+      '<div class="flds">' + fields + '</div><p class="err-msg" id="berr"></p>' +
+      '<div class="sheet-actions"><button type="button" class="btn btn-ghost" id="bcancel">Cancel</button><button class="btn btn-blue" type="submit" id="bsave">Save to Sheet</button></div>' +
+      (canRemove ? '<button type="button" class="btn-link danger" id="bremove">Remove this row from the Sheet</button>' : '') + '</form>';
+    sh.hidden = false; $('#toast').hidden = true;
+    function close() { sh.hidden = true; sh.innerHTML = ''; }
+    $('#bcancel').addEventListener('click', close);
+    sh.onclick = function (e) { if (e.target === sh) close(); };
+    function run(promise) {
+      var btn = $('#bsave'); btn.disabled = true; btn.textContent = 'Saving…';
+      promise.then(function (res) {
+        S.data.tabs[S.data.boardTab || 'ORU Advisory Board'] = res.values;
+        S.board = parseBoard(res.values);
+        close(); route(); toast('Committee updated in the Sheet');
+      }).catch(function (err) { $('#berr').textContent = err.message; btn.disabled = false; btn.textContent = 'Save to Sheet'; });
+    }
+    $('#bform').addEventListener('submit', function (e) { e.preventDefault(); var p = onSave(); if (p) run(p); });
+    var rm = $('#bremove');
+    if (rm) rm.addEventListener('click', function () {
+      if (!rm.dataset.armed) { rm.dataset.armed = '1'; rm.textContent = 'Tap again to remove'; return; }
+      run(onRemove());
+    });
+  }
+
+  function val(id) { return $('#' + id).value.trim(); }
+
+  function editMember(m) {
+    var isNew = !m, last = S.board.members[S.board.members.length - 1];
+    var open = m && /^open$/i.test(m.name);
+    boardSheet(isNew ? 'Add member' : 'Edit ' + (open ? 'open seat' : m.name),
+      'ORU Advisory Board tab · type <b>Open</b> as the name for an empty seat',
+      field('fd', 'District', m ? m.district : '', 'placeholder="e.g. 3 or JCREMC" required') +
+      field('fn', 'Name', m && !open ? m.name : '', 'placeholder="Open"') +
+      field('fp', 'Phone', m ? m.phone : '', 'type="tel" inputmode="tel"') +
+      field('fe', 'Email', m ? m.email : '', 'type="email" inputmode="email" autocapitalize="off"'),
+      !isNew,
+      function () {
+        var d = val('fd'), n = val('fn') || 'Open', ph = val('fp'), em = val('fe');
+        if (!d) { $('#berr').textContent = 'District is required.'; return null; }
+        if (em && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) { $('#berr').textContent = 'That email doesn’t look right.'; return null; }
+        if (/^open$/i.test(n)) { n = 'Open'; ph = ''; em = ''; }
+        return api('board', { kind: 'member', op: isNew ? 'add' : 'edit', row: isNew ? last.row : m.row, col: isNew ? last.col : m.col,
+          old: isNew ? last.name : m.name, values: [d, n, ph, em] });
+      },
+      function () { return api('board', { kind: 'member', op: 'remove', row: m.row, col: m.col, old: m.name }); });
+    setTimeout(function () { $(isNew ? '#fd' : '#fn').focus(); }, 60);
+  }
+
+  function editOfficer(p) {
+    var isNew = !p, last = S.board.positions[S.board.positions.length - 1];
+    var vac = p && /^vacant$/i.test(p.name);
+    var names = S.board.members.filter(function (m) { return m.name && !/^open$/i.test(m.name); }).map(function (m) { return m.name; });
+    boardSheet(isNew ? 'Add officer' : 'Edit ' + p.title, 'Leave the name blank to mark it <b>Vacant</b>',
+      field('ot', 'Position', p ? p.title : '', 'required') +
+      field('on', 'Name', p && !vac ? p.name : '', 'list="memberNames" placeholder="Vacant"') +
+      '<datalist id="memberNames">' + names.map(function (n) { return '<option value="' + esc(n) + '">'; }).join('') + '</datalist>',
+      !isNew,
+      function () {
+        var t = val('ot'), n = val('on') || 'Vacant';
+        if (!t) { $('#berr').textContent = 'Position is required.'; return null; }
+        return api('board', { kind: 'position', op: isNew ? 'add' : 'edit', row: isNew ? last.row : p.row, col: isNew ? last.col : p.col,
+          old: isNew ? last.title : p.title, values: [t, n] });
+      },
+      function () { return api('board', { kind: 'position', op: 'remove', row: p.row, col: p.col, old: p.title }); });
+    setTimeout(function () { $(isNew ? '#ot' : '#on').focus(); }, 60);
   }
 
   function topHtml() {

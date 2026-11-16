@@ -3,7 +3,7 @@
 Private workspace for the ORU Advisory Board chair. It reads the **"Funds Requested By Organization"** Google Sheet live and has four views:
 
 - **Search** (landing): has an organization been funded? Searches every cycle tab and groups spelling variants of the same org.
-- **Dashboard**: total given, grants per cycle, committee roster and officers, top recipients.
+- **Dashboard**: total given, grants per cycle, committee roster and officers (editable — writes back to the ORU Advisory Board tab), top recipients.
 - **Cycles**: each cycle tab laid out the way it is in the Sheet, with footer totals, filters and sortable columns.
 - **Decide**: the current cycle as a card deck. **Fund** writes the full request to *Amount Funded*. **Partially fund** asks for an amount and an optional note. **Skip** leaves Amount Funded blank and moves the app to a "Discuss at board meeting" pile (saved on this device). A small "Not funding this one" link writes $0. Each decision has Undo and a **Change** button.
 

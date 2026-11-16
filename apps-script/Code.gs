@@ -5,7 +5,7 @@
  * - Every request must carry the passcode (stored in Script Properties, never in code).
  * - Set it from the Sheet menu: ORU Site → Set passcode…
  * - 10 wrong tries locks the site for 15 minutes.
- * - Only CURRENT_TAB can be written to, and only its "Amount Funded" / "Notes" cells.
+ * - Writes allowed: CURRENT_TAB "Amount Funded" / "Notes" cells, and the committee rows on BOARD_TAB.
  */
 
 const CURRENT_TAB = '2026 October';      // ← change each cycle (e.g. '2027 April')
@@ -46,6 +46,7 @@ function doPost(e) {
   try {
     if (body.action === 'data') return json_({ ok: true, data: readAll_() });
     if (body.action === 'decide') return json_(decide_(body));
+    if (body.action === 'board') return json_(board_(body));
     return json_({ ok: false, error: 'Unknown action' });
   } catch (err) {
     return json_({ ok: false, error: String((err && err.message) || err) });
@@ -112,6 +113,49 @@ function decide_(b) {
     if (cNote && typeof b.note === 'string') sh.getRange(row, cNote).setValue(b.note);
     SpreadsheetApp.flush();
     return { ok: true, tab: CURRENT_TAB, values: sh.getDataRange().getDisplayValues() };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Edit the committee on the ORU Advisory Board tab.
+ * kind: 'member' (District | Representative | Phone | Email) or 'position' (Title | Name)
+ * op:   'edit' | 'add' (inserts a row after `row`) | 'remove' (deletes `row`)
+ * `old` must match what's in the sheet now (name for members, title for positions) so stale edits are rejected.
+ */
+function board_(b) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const sh = SpreadsheetApp.getActive().getSheetByName(BOARD_TAB);
+    if (!sh) throw new Error('Tab "' + BOARD_TAB + '" not found');
+    const row = Number(b.row), col = Number(b.col);
+    if (!(row >= 1) || !(col >= 1)) throw new Error('Bad row');
+    const width = b.kind === 'member' ? 4 : b.kind === 'position' ? 2 : 0;
+    if (!width) throw new Error('Bad kind');
+    // members: check the name cell (col+1); positions: check the title cell (col)
+    const checkCol = b.kind === 'member' ? col + 1 : col;
+    const now = String(sh.getRange(row, checkCol).getDisplayValue()).trim();
+    if (now !== String(b.old || '').trim()) throw new Error('The sheet changed under you — refresh and try again.');
+    // the anchor row must be inside the right block
+    const label = String(sh.getRange(row, col).getDisplayValue()).trim();
+    if (!label || label === 'District' || label === 'Positions') throw new Error('Not a committee row');
+
+    if (b.op === 'remove') {
+      sh.deleteRow(row);
+    } else {
+      const vals = (b.values || []).slice(0, width).map(function (v) { return String(v == null ? '' : v).trim().slice(0, 200); });
+      while (vals.length < width) vals.push('');
+      if (!vals[0]) throw new Error('First field is required');
+      let target = row;
+      if (b.op === 'add') { sh.insertRowAfter(row); target = row + 1; }
+      else if (b.op !== 'edit') throw new Error('Bad op');
+      // keep things like "1" or phone numbers as plain text
+      sh.getRange(target, col, 1, width).setNumberFormat('@').setValues([vals]);
+    }
+    SpreadsheetApp.flush();
+    return { ok: true, values: sh.getDataRange().getDisplayValues() };
   } finally {
     lock.releaseLock();
   }
