@@ -27,6 +27,14 @@ function onOpen() {
     .addToUi();
 }
 
+/** Run this once from the Apps Script editor (pick "authorize" in the function menu, then Run)
+ *  so Google asks for every permission the site needs, including reading the shared Drive folders. */
+function authorize() {
+  SpreadsheetApp.getActive().getName();
+  DriveApp.searchFolders("title contains 'ORU Grant Applications'").hasNext();
+  Logger.log('All set — now Deploy → Manage deployments → Edit → New version.');
+}
+
 function promptPasscode() {
   const ui = SpreadsheetApp.getUi();
   const r = ui.prompt('ORU site passcode', 'Enter the passcode for the private site:', ui.ButtonSet.OK_CANCEL);

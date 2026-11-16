@@ -770,7 +770,8 @@
   function docsHtml(cyc, it, compact) {
     var d = S.docs[cyc.name];
     if (!d || d.status === 'loading') return '<div class="docs"><span class="label">Application files</span><div class="docs-wait">Loading files from Drive…</div></div>';
-    if (d.status === 'err') return '<div class="docs"><span class="label">Application files</span><div class="docs-wait">Couldn’t load files: ' + esc(d.error) + '</div></div>';
+    if (d.status === 'err') return '<div class="docs"><span class="label">Application files</span><div class="docs-wait">' +
+      (/permission|authoriz/i.test(d.error) ? 'Drive access isn’t approved yet. In Apps Script, run <b>authorize</b> once, then deploy a new version.' : 'Couldn’t load files: ' + esc(d.error)) + '</div></div>';
     if (!d.folder) return '<div class="docs"><span class="label">Application files</span><div class="docs-wait">No Drive folder found for ' + cyc.label + '.</div></div>';
     var o = d.byRow[it.row];
     if (!o) return '<div class="docs"><span class="label">Application files</span><div class="docs-wait">No matching folder. <a href="' + esc(d.folder.url) + '" target="_blank" rel="noopener">Open the ' + cyc.label + ' folder</a></div></div>';
