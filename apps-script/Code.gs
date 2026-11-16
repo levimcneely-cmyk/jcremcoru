@@ -5,6 +5,7 @@
  * - Every request must carry the passcode (stored in Script Properties, never in code).
  * - Set it from the Sheet menu: ORU Site → Set passcode…
  * - 10 wrong tries locks the site for 15 minutes.
+ * - Reads application files from the shared Drive folders (needs Drive permission the first time).
  * - Writes allowed: CURRENT_TAB "Amount Funded", the "Notes" cell on any cycle tab, and the committee rows on BOARD_TAB.
  */
 
@@ -12,6 +13,11 @@ const CURRENT_TAB = '2026 October';      // ← change each cycle (e.g. '2027 Ap
 const BOARD_TAB = 'ORU Advisory Board';
 const CYCLE_RE = /^\d{4} (April|October)$/;
 const MAX_TRIES = 10;
+// Application files live in shared Drive folders named like "JCREMC ORU Grant Applications Fall 2026"
+// (one subfolder per organization). They're found by name; pin a tab to a folder ID here if a name doesn't match.
+const DOC_FOLDERS = {
+  // '2024 April': 'folderIdHere',
+};
 const LOCK_MINUTES = 15;
 
 function onOpen() {
@@ -48,6 +54,7 @@ function doPost(e) {
     if (body.action === 'decide') return json_(decide_(body));
     if (body.action === 'board') return json_(board_(body));
     if (body.action === 'note') return json_(note_(body));
+    if (body.action === 'docs') return json_(docs_(body));
     return json_({ ok: false, error: 'Unknown action' });
   } catch (err) {
     return json_({ ok: false, error: String((err && err.message) || err) });
@@ -117,6 +124,52 @@ function decide_(b) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/** List application files for one cycle: [{ name: org folder name, url, files: [{name,url,mime,size}] }] */
+function docs_(b) {
+  const tab = String(b.tab || '');
+  const m = tab.match(CYCLE_RE);
+  if (!m) throw new Error('Not a cycle tab');
+  const cache = CacheService.getScriptCache(), ck = 'docs:' + tab;
+  const hit = !b.fresh && cache.get(ck);
+  if (hit) return JSON.parse(hit);
+  const folder = DOC_FOLDERS[tab] ? DriveApp.getFolderById(DOC_FOLDERS[tab]) : findDocFolder_(tab.slice(0, 4), m[1]);
+  let out;
+  if (!folder) {
+    out = { ok: true, tab: tab, folder: null, orgs: [] };
+  } else {
+    const orgs = [], loose = [];
+    const subs = folder.getFolders();
+    while (subs.hasNext()) {
+      const f = subs.next(), files = [], it = f.getFiles();
+      while (it.hasNext()) files.push(fileInfo_(it.next()));
+      orgs.push({ name: f.getName(), url: f.getUrl(), files: files });
+    }
+    const fi = folder.getFiles();
+    while (fi.hasNext()) loose.push(fileInfo_(fi.next()));
+    out = { ok: true, tab: tab, folder: { name: folder.getName(), url: folder.getUrl() }, orgs: orgs, loose: loose };
+  }
+  const str = JSON.stringify(out);
+  if (str.length < 95000) cache.put(ck, str, 600);
+  return out;
+}
+
+function fileInfo_(x) {
+  return { name: x.getName(), url: x.getUrl(), mime: x.getMimeType(), size: x.getSize() };
+}
+
+function findDocFolder_(year, month) {
+  const season = month === 'April' ? 'Spring' : 'Fall';
+  const mm = month === 'April' ? '0?4' : '10';
+  const bySeason = new RegExp('\\b' + season + '\\s+' + year + '\\b', 'i');
+  const byNum = new RegExp('\\b' + mm + '\\s*/\\s*' + year + '\\b');
+  const it = DriveApp.searchFolders("title contains 'ORU Grant Applications' and trashed = false");
+  while (it.hasNext()) {
+    const f = it.next(), n = f.getName();
+    if (bySeason.test(n) || byNum.test(n)) return f;
+  }
+  return null;
 }
 
 /** Save the Notes cell for one application row on any cycle tab. */

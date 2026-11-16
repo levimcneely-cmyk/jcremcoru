@@ -311,3 +311,18 @@ button.hbar .fill{display:block}
 .m-h:first-of-type{border-top:0}
 .sheet-t tbody tr.click{cursor:pointer}
 @media(max-width:760px){.m-facts{grid-template-columns:1fr 1fr}.m-facts div:last-child{grid-column:1/3}}
+/* application files */
+.docs{margin:12px 0}
+.docs-head{display:flex;justify-content:space-between;align-items:baseline}
+.docs-wait{font-size:.88rem;color:var(--muted);padding:6px 0}
+.docs-list{display:grid;gap:6px;margin-top:6px}
+.doc{display:grid;grid-template-columns:42px 1fr auto;gap:10px;align-items:center;padding:9px 10px;border:1px solid var(--line);border-radius:10px;text-decoration:none;color:var(--ink);background:#fff;font-size:.92rem}
+.doc:hover{border-color:var(--blue);background:#f7f9fc}
+.doc.main{border-color:#c5d0e3;background:var(--blue-l)}
+.doc.main .dn{font-weight:800;color:var(--blue-d)}
+.doc .dn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.doc .go{color:var(--muted)}
+.ic{font-family:var(--head);font-weight:800;font-size:.66rem;letter-spacing:.04em;text-align:center;border-radius:6px;padding:5px 0;color:#fff;background:var(--gray)}
+.ic-pdf{background:#b5452f}.ic-xls{background:var(--green)}.ic-doc{background:var(--blue)}
+.clip{font-size:.75rem;color:var(--muted);font-weight:600;white-space:nowrap}
+.dhist:empty{display:none}

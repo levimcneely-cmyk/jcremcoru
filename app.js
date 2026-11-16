@@ -228,7 +228,7 @@
     var btn = $('#refreshBtn');
     if (showSpin) btn.classList.add('spin');
     return api('data').then(function (res) {
-      ingest(res.data);
+      ingest(res.data); S.docs = {};
       $('#lock').hidden = true; $('#app').hidden = false;
       route();
     }).finally(function () { btn.classList.remove('spin'); });
@@ -600,6 +600,8 @@
     $('#cq').addEventListener('input', function (e) { S.cq = e.target.value; drawTable(cyc); });
     $$('#seg button').forEach(function (b) { b.addEventListener('click', function () { S.filter = b.getAttribute('data-f'); $$('#seg button').forEach(function (x) { x.classList.toggle('on', x === b); }); drawTable(cyc); }); });
     drawTable(cyc);
+    var dd = S.docs[cyc.name];
+    if (!dd || dd.status !== 'ok') loadDocs(cyc).then(function (d) { if (d.status === 'ok' && S._cycName === cyc.name && $('#tw')) drawTable(S.byName[cyc.name] || cyc); });
   }
 
   function drawTable(cyc) {
@@ -633,6 +635,7 @@
         var v = String(it.cells[i] == null ? '' : it.cells[i]).trim();
         if (i === C.fund) return '<td class="r num">' + (v ? esc(v) : (st === 'pending' || st === 'discuss' ? chip(st) : '')) + '</td>';
         if (moneyCols.indexOf(i) >= 0) return '<td class="r num">' + esc(v) + '</td>';
+        if (i === C.org) { var dd = S.docs[cyc.name], o = dd && dd.status === 'ok' && dd.byRow[it.row]; return '<td>' + esc(v) + (o ? ' <span class="clip" title="' + o.files.length + ' files">📎' + o.files.length + '</span>' : '') + '</td>'; }
         if (i === C.notes || i > C.notes) return '<td class="note">' + esc(v) + '</td>';
         return '<td>' + esc(v) + '</td>';
       }).join('') + '</tr>';
@@ -673,6 +676,77 @@
     });
   }
 
+  // ---------- application files (from the cycle's shared Drive folder) ----------
+  S.docs = {};
+  var STOP = { of: 1, the: 1, and: 1, for: 1, inc: 1, incorporated: 1, a: 1, co: 1, corp: 1, dba: 1, llc: 1 };
+  function nameToks(n) {
+    return String(n || '').toLowerCase().replace(/\s+-\s+\d{1,2}-\d{2,4}\s*$/, '').replace(/[’'_]s\b/g, 's').replace(/&/g, ' and ')
+      .replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(function (t) { return t && !STOP[t]; });
+  }
+  function tokHit(a, b) {
+    if (a === b) return true;
+    var s1 = a.length < b.length ? a : b, l = s1 === a ? b : a;
+    if (s1.length >= 3 && l.indexOf(s1) === 0) return true;             // rec ↔ recreation
+    return a.length >= 5 && b.length >= 5 && a.slice(0, 5) === b.slice(0, 5); // sisteres ↔ sisters
+  }
+  function matchScore(rowName, folderName) {
+    var A = nameToks(rowName), B = nameToks(folderName);
+    if (!A.length || !B.length) return 0;
+    var hitA = A.filter(function (t) { return B.some(function (u) { return tokHit(t, u); }); }).length;
+    var hitB = B.filter(function (t) { return A.some(function (u) { return tokHit(t, u); }); }).length;
+    return hitA / A.length + 0.25 * hitB / B.length;
+  }
+  function loadDocs(cyc) {
+    var d = S.docs[cyc.name];
+    if (d && d.status !== 'err') return d.promise;
+    d = S.docs[cyc.name] = { status: 'loading' };
+    d.promise = api('docs', { tab: cyc.name }).then(function (res) {
+      d.status = 'ok'; d.folder = res.folder; d.orgs = res.orgs || []; d.byRow = {};
+      // best folder per row, then make sure no folder is claimed twice
+      var pairs = [];
+      cyc.items.forEach(function (it) { d.orgs.forEach(function (o, oi) { var sc = matchScore(it.org, o.name); if (sc >= 0.6) pairs.push({ row: it.row, oi: oi, sc: sc }); }); });
+      pairs.sort(function (a, b) { return b.sc - a.sc; });
+      var usedO = {};
+      pairs.forEach(function (p) { if (!d.byRow[p.row] && !usedO[p.oi]) { d.byRow[p.row] = d.orgs[p.oi]; usedO[p.oi] = 1; } });
+      d.unmatched = d.orgs.filter(function (o, oi) { return !usedO[oi]; });
+      return d;
+    }).catch(function (err) { d.status = 'err'; d.error = err.message; return d; });
+    return d.promise;
+  }
+  function fileIcon(f) {
+    var m = (f.mime || '') + ' ' + f.name.toLowerCase();
+    if (/pdf/.test(m)) return 'PDF';
+    if (/sheet|excel|\.xlsx?|csv/.test(m)) return 'XLS';
+    if (/word|document|\.docx?/.test(m)) return 'DOC';
+    if (/image/.test(m)) return 'IMG';
+    return 'FILE';
+  }
+  function fileLabel(f) {
+    var n = f.name;
+    if (/^ORU-/i.test(n)) return 'Application';
+    return n.replace(/\.(pdf|docx?|xlsx?)$/i, '').replace(/[-_]+/g, ' ').replace(/\s+\(\d+\)$/, '').trim();
+  }
+  function docsHtml(cyc, it) {
+    var d = S.docs[cyc.name];
+    if (!d || d.status === 'loading') return '<div class="docs"><span class="label">Application files</span><div class="docs-wait">Loading files from Drive…</div></div>';
+    if (d.status === 'err') return '<div class="docs"><span class="label">Application files</span><div class="docs-wait">Couldn’t load files: ' + esc(d.error) + '</div></div>';
+    if (!d.folder) return '<div class="docs"><span class="label">Application files</span><div class="docs-wait">No Drive folder found for ' + cyc.label + '.</div></div>';
+    var o = d.byRow[it.row];
+    if (!o) return '<div class="docs"><span class="label">Application files</span><div class="docs-wait">No matching folder. <a href="' + esc(d.folder.url) + '" target="_blank" rel="noopener">Open the ' + cyc.label + ' folder</a></div></div>';
+    var files = o.files.slice().sort(function (a, b) { return (/^ORU-/i.test(b.name) ? 1 : 0) - (/^ORU-/i.test(a.name) ? 1 : 0) || a.name.localeCompare(b.name); });
+    return '<div class="docs"><div class="docs-head"><span class="label">Application files (' + files.length + ')</span><a class="small" href="' + esc(o.url) + '" target="_blank" rel="noopener">Folder ↗</a></div>' +
+      '<div class="docs-list">' + files.map(function (f) {
+        var ic = fileIcon(f), main = /^ORU-/i.test(f.name);
+        return '<a class="doc' + (main ? ' main' : '') + '" href="' + esc(f.url) + '" target="_blank" rel="noopener" title="' + esc(f.name) + '">' +
+          '<span class="ic ic-' + ic.toLowerCase() + '">' + ic + '</span><span class="dn">' + esc(fileLabel(f)) + '</span><span class="go">↗</span></a>';
+      }).join('') + '</div></div>';
+  }
+  function fillDocs(cyc, it, el) {
+    if (!el) return;
+    el.innerHTML = docsHtml(cyc, it);
+    loadDocs(cyc).then(function () { if (document.body.contains(el)) el.innerHTML = docsHtml(cyc, it); });
+  }
+
   // ---------- row detail + notes (any cycle) ----------
   function openRow(cycName, row) {
     var cyc = S.byName[cycName]; if (!cyc) return;
@@ -690,6 +764,7 @@
       '<div><span class="label">Project cost</span><b class="num">' + (it.cost != null ? fmt(it.cost) : esc(it.costRaw || '—')) + '</b>' + (share != null && share <= 100 ? '<small class="muted">' + share + '% of project</small>' : '') + '</div>' +
       '<div><span class="label">Funded</span><b class="num">' + (it.funded > 0 ? fmt(it.funded) : '—') + '</b>' + chip(st) + '</div></div>' +
       (extras.length ? '<div class="m-extra">' + extras.join('') + '</div>' : '') +
+      '<div id="mdocs"></div>' +
       (C.notes >= 0 ? '<label class="fld"><span>Notes</span><textarea id="mnote" rows="3" placeholder="Add a note — saves to the Notes column">' + esc(noteRaw) + '</textarea></label>' +
         '<p class="err-msg" id="merr"></p><div class="sheet-actions">' +
         (cyc === S.current && it.funded == null ? '<a class="btn btn-outline" href="#/decide" id="mdeck">Decide</a>' : '<span></span>') +
@@ -699,6 +774,7 @@
           return '<div class="m-h"><span>' + a.cyc.label + '</span><span>' + esc(a.it.project) + '</span><span class="num">' + (a.it.funded > 0 ? fmt(Math.round(a.it.funded)) + ' ' : '') + chip(s2) + '</span></div>';
         }).join('') + '</div>' : '<p class="small muted" style="margin-top:14px">No other applications from this organization.</p>');
     var m = openModal(html);
+    fillDocs(cyc, it, $('#mdocs'));
     var deck = $('#mdeck'); if (deck) deck.addEventListener('click', function () { S.focusRow = it.row; });
     var save = $('#msave');
     if (save) save.addEventListener('click', function () {
@@ -753,6 +829,7 @@
     }
     v.innerHTML = html;
     setSync();
+    if (it) fillDocs(cyc, it, $('#ddocs'));
     if (it) {
       $('#bFund').addEventListener('click', function () { decide(it, it.requested); });
       $('#bPart').addEventListener('click', function () { openPartial(it); });
@@ -810,6 +887,7 @@
       '<div class="dfacts"><div><div class="label">Requested</div><div class="value num">' + fmt(it.requested) + '</div></div>' +
       '<div><div class="label">Project cost</div><div class="value num">' + (it.cost != null ? fmt(it.cost) : esc(it.costRaw || '—')) + '</div>' +
       (share != null ? '<div class="small muted">' + (share > 100 ? 'asks more than total cost' : share + '% of project') + '</div>' : '') + '</div></div>' +
+      '<div class="dhist" id="ddocs"></div>' +
       (it.notes ? '<div class="dhist"><div class="h">Notes</div>' + esc(it.notes) + '</div>' : '') +
       '<div class="dhist">' + hist + '</div>' +
       '<div class="dactions">' +
