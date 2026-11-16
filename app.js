@@ -74,6 +74,8 @@
       if (!r.some(function (c) { return String(c).trim(); })) continue;
       for (var c = r.length - 1; c > maxCol; c--) if (String(r[c]).trim()) { maxCol = c; break; }
       var funded = money(r[C.fund]);
+      var disc = false;
+      if (C.notes >= 0 && DISCUSS_RE.test(String(r[C.notes] || ''))) { disc = true; r = r.slice(); r[C.notes] = String(r[C.notes]).replace(DISCUSS_RE, '').trim(); }
       var extra = [];
       for (var x = 0; x < r.length; x++) {
         if (x === C.org || x === C.proj || x === C.ref || x === C.req || x === C.cost || x === C.fund) continue;
@@ -85,7 +87,7 @@
         orgRaw: String(r[C.org] || ''), org: String(r[C.org] || '').trim(),
         project: String(r[C.proj] || '').trim(), ref: String(r[C.ref] || '').trim(),
         requested: money(r[C.req]) || 0, cost: money(r[C.cost]), costRaw: String(r[C.cost] || '').trim(),
-        funded: funded, notes: extra.join(' · ')
+        funded: funded, notes: extra.join(' · '), noteCell: C.notes >= 0 ? String(r[C.notes] || '').trim() : '', discuss: disc
       });
     }
     var footer = [];
@@ -126,13 +128,12 @@
 
   // "Skip" = come back to it at the board discussion. Nothing is written to the Sheet
   // (Amount Funded stays blank); the skip list lives on this device.
-  function skipKey(cyc) { return 'oru.skip.' + cyc.name; }
-  function itemKey(it) { return it.row + '|' + it.org; }
-  function getSkips(cyc) { try { return JSON.parse(store.get(skipKey(cyc)) || '[]'); } catch (e) { return []; } }
-  function setSkips(cyc, arr) { store.set(skipKey(cyc), JSON.stringify(arr)); }
-  function isSkipped(it, cyc) { return getSkips(cyc).indexOf(itemKey(it)) >= 0; }
-  function addSkip(it, cyc) { var a = getSkips(cyc).filter(function (k) { return k !== itemKey(it); }); a.push(itemKey(it)); setSkips(cyc, a); }
-  function removeSkip(it, cyc) { setSkips(cyc, getSkips(cyc).filter(function (k) { return k !== itemKey(it); })); }
+  // "Skip" = discuss at the board meeting. Stored in the Sheet as a "[Discuss]" tag at the start of Notes,
+  // so it shows the same on every device. Amount Funded stays blank.
+  var DISCUSS_RE = /^\s*\[discuss\]\s*/i;
+  function isSkipped(it) { return !!(it && it.discuss); }
+  function addSkip(it) { setDiscuss(it, true); }
+  function removeSkip(it) { setDiscuss(it, false); }
 
   function status(it, cyc) {
     if (it.funded == null) return cyc === S.current ? (isSkipped(it, cyc) ? 'discuss' : 'pending') : 'none';
@@ -216,8 +217,9 @@
   function replaceCurrent(values) { if (S.current) replaceTab(S.current.name, values); }
 
   // ---------- lock / unlock ----------
+  var CACHE_KEY = 'oru.cache';
   function lock(msg) {
-    S.pass = null; memPass = null; store.del(PASS_KEY);
+    S.pass = null; memPass = null; store.del(PASS_KEY); store.del(CACHE_KEY); S.data = null;
     $('#app').hidden = true; $('#lock').hidden = false;
     $('#lockMsg').textContent = msg || '';
     $('#pass').value = '';
@@ -228,9 +230,14 @@
     var btn = $('#refreshBtn');
     if (showSpin) btn.classList.add('spin');
     return api('data').then(function (res) {
+      var wasShowing = !!S.data;
       ingest(res.data); S.docs = {};
+      if (store.get(PASS_KEY)) store.set(CACHE_KEY, JSON.stringify(res.data)); // instant open next time (only when "remember" is on)
       $('#lock').hidden = true; $('#app').hidden = false;
-      route();
+      var typing = document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+      if (!wasShowing || ($('#sheet').hidden && !typing)) route();
+      else if (document.activeElement && document.activeElement.id === 'q') drawResults();
+      migrateLocalSkips();
     }).finally(function () { btn.classList.remove('spin'); });
   }
 
@@ -241,7 +248,7 @@
     var btn = e.target.querySelector('button'); btn.disabled = true; btn.textContent = 'Unlocking…';
     memPass = p; S.pass = p;
     load().then(function () {
-      if ($('#remember').checked) store.set(PASS_KEY, p); else S.pass = null;
+      if ($('#remember').checked) { store.set(PASS_KEY, p); store.set(CACHE_KEY, JSON.stringify(S.data)); } else S.pass = null;
     }).catch(function (err) {
       if (!$('#lock').hidden) $('#lockMsg').textContent = err.message === 'Failed to fetch' ? 'Could not reach the Sheet. Check your connection.' : err.message;
     }).finally(function () { btn.disabled = false; btn.textContent = 'Unlock'; });
@@ -259,7 +266,9 @@
     $$('[data-pending]').forEach(function (b) { b.textContent = pend ? pend : ''; });
     hideTip();
     var v = $('#view');
-    if (r === 'dashboard') renderDashboard(v);
+    document.body.classList.toggle('meeting-mode', r === 'meeting');
+    if (r === 'meeting') renderMeeting(v);
+    else if (r === 'dashboard') renderDashboard(v);
     else if (r === 'cycles') renderCycles(v, decodeURIComponent(parts.slice(1).join('/') || ''));
     else if (r === 'decide') renderDecide(v);
     else renderSearch(v);
@@ -811,6 +820,7 @@
       '<div><span class="label">Project cost</span><b class="num">' + (it.cost != null ? fmt(it.cost) : esc(it.costRaw || '—')) + '</b>' + (share != null && share <= 100 ? '<small class="muted">' + share + '% of project</small>' : '') + '</div>' +
       '<div><span class="label">Funded</span><b class="num">' + (it.funded > 0 ? fmt(it.funded) : '—') + '</b>' + chip(st) + '</div></div>' +
       (extras.length ? '<div class="m-extra">' + extras.join('') + '</div>' : '') +
+      (cyc === S.current && it.funded == null ? flagsHtml(it, cyc) : '') +
       '<div id="mdocs"></div>' +
       (C.notes >= 0 ? '<label class="fld"><span>Notes</span><textarea id="mnote" rows="3" placeholder="Add a note — saves to the Notes column">' + esc(noteRaw) + '</textarea></label>' +
         '<p class="err-msg" id="merr"></p><div class="sheet-actions">' +
@@ -826,39 +836,97 @@
     var save = $('#msave');
     if (save) save.addEventListener('click', function () {
       var note = $('#mnote').value.trim();
+      if (it.discuss) note = '[Discuss] ' + note;
       save.disabled = true; save.textContent = 'Saving…';
-      api('note', { tab: cyc.name, row: it.row, org: it.orgRaw, note: note }).then(function (res) {
+      api('note', { tab: cyc.name, row: it.row, org: it.orgRaw, note: note.trim() }).then(function (res) {
         replaceTab(cyc.name, res.values);
         m.close(); route(); toast('Note saved · ' + it.org);
       }).catch(function (err) { $('#merr').textContent = err.message; save.disabled = false; save.textContent = 'Save note'; });
     });
   }
 
+  // ---------- flags: things worth knowing before deciding ----------
+  var NOTE_FLAG_RE = /outside|not serve|does ?n.t serve|reference|specific|detail|coach|reapply|re-apply|come back|next (cycle|time|application)|concern|poor|lack|timing|already|done already|appears|location|budget/i;
+  function flagsFor(it, cyc) {
+    var out = [], g = S.groupByKey[canon(it.org)];
+    var past = g ? g.apps.filter(function (a) { return a.cyc !== cyc; }) : [];
+    var idx = S.cycles.indexOf(cyc), prevCyc = S.cycles[idx + 1];
+    var same = g ? g.apps.filter(function (a) { return a.cyc === cyc; }) : [];
+    if (same.length > 1) out.push({ k: 'info', t: plural(same.length, 'request') + ' from this organization this cycle' });
+    if (it.cost != null && it.requested > it.cost + 0.005) out.push({ k: 'warn', t: 'Asks for more than the project costs' });
+    if (it.cost == null && (!it.costRaw || /^[-?]+$/.test(it.costRaw))) out.push({ k: 'info', t: 'No total project cost given' });
+    if (prevCyc) {
+      var lp = past.filter(function (a) { return a.cyc === prevCyc; });
+      var lf = lp.filter(function (a) { return a.it.funded > 0; }).reduce(function (s, a) { return s + a.it.funded; }, 0);
+      if (lf > 0) out.push({ k: 'warn', t: 'Funded last cycle · ' + fmt(lf) + ' (' + prevCyc.label + ')' });
+      else if (lp.length && lp.some(function (a) { return a.it.funded === 0; })) out.push({ k: 'info', t: 'Not funded last cycle (' + prevCyc.label + ')' });
+    }
+    var last4 = S.cycles.slice(idx + 1, idx + 5);
+    var n4 = last4.filter(function (c) { return past.some(function (a) { return a.cyc === c && a.it.funded > 0; }); }).length;
+    if (n4 >= 3) out.push({ k: 'info', t: 'Funded in ' + n4 + ' of the last 4 cycles' });
+    if (!past.length) out.push({ k: 'good', t: 'First-time applicant' });
+    past.filter(function (a) { return a.it.notes && NOTE_FLAG_RE.test(a.it.notes); }).slice(0, 2).forEach(function (a) {
+      var n = a.it.notes.length > 90 ? a.it.notes.slice(0, 88) + '…' : a.it.notes;
+      out.push({ k: 'warn', t: a.cyc.label + ' note: “' + n + '”' });
+    });
+    return out;
+  }
+  function flagsHtml(it, cyc) {
+    var f = flagsFor(it, cyc);
+    if (!f.length) return '';
+    return '<div class="flags">' + f.map(function (x) { return '<span class="flag ' + x.k + '">' + (x.k === 'warn' ? '⚠︎ ' : x.k === 'good' ? '★ ' : '') + esc(x.t) + '</span>'; }).join('') + '</div>';
+  }
+
+  // ---------- shared decide helpers ----------
+  function abcSort(a, b) { return a.org.localeCompare(b.org, 'en', { sensitivity: 'base' }); }
+  function deckLists(cyc) {
+    var pending = cyc.items.filter(function (it) { return it.funded == null; });
+    return {
+      pending: pending,
+      decided: cyc.items.filter(function (it) { return it.funded != null; }),
+      fresh: pending.filter(function (it) { return !it.discuss; }).sort(abcSort),
+      skipped: pending.filter(function (it) { return it.discuss; }).sort(abcSort)
+    };
+  }
+  function remainingAsk(cyc) { return cyc.items.filter(function (it) { return it.funded == null; }).reduce(function (s, it) { return s + (it.requested || 0); }, 0); }
+
+  // First tap on a Fund that would go over budget asks for a second tap.
+  function wireFund(btn, it, cyc) {
+    btn.addEventListener('click', function () {
+      var over = cyc.left != null && it.requested > cyc.left + 0.005;
+      if (over && !btn.dataset.armed) {
+        btn.dataset.armed = '1';
+        btn.innerHTML = btn.closest('.m-btns') ? 'Over by ' + fmtK(it.requested - cyc.left) + '<small>tap again</small>'
+          : 'Over budget by ' + fmt(it.requested - cyc.left) + '<small>tap again to fund anyway</small>';
+        btn.classList.add('armed');
+        return;
+      }
+      decide(it, it.requested);
+    });
+  }
+
   // ---------- DECIDE (current cycle) ----------
   function renderDecide(v) {
     var cyc = S.current;
-    if (!cyc) { v.innerHTML = '<div class="card empty">No current cycle is set. Update CURRENT_TAB in the Apps Script.</div>'; return; }
-    var pending = cyc.items.filter(function (it) { return it.funded == null; });
-    var decided = cyc.items.filter(function (it) { return it.funded != null; });
-    var keys = getSkips(cyc);
-    var abc = function (a, b) { return a.org.localeCompare(b.org, 'en', { sensitivity: 'base' }); };
-    var fresh = pending.filter(function (it) { return keys.indexOf(itemKey(it)) < 0; }).sort(abc);
-    var skipped = pending.filter(function (it) { return keys.indexOf(itemKey(it)) >= 0; }).sort(abc);
+    if (!cyc) { v.innerHTML = '<div class="card empty">No current cycle tab found.</div>'; return; }
+    var L = deckLists(cyc), pending = L.pending, decided = L.decided, fresh = L.fresh, skipped = L.skipped;
     var it = null;
     if (S.focusRow) { it = pending.filter(function (x) { return x.row === S.focusRow; })[0] || null; S.focusRow = null; }
     it = it || fresh[0] || skipped[0];
-    var discussing = it && isSkipped(it, cyc);
-    var html = '<div class="section-head"><h2>' + cyc.label + ' decisions</h2><span class="sync" id="sync"></span></div>' + budgetHtml(cyc);
+    var discussing = it && isSkipped(it);
+    var html = '<div class="section-head"><h2>' + cyc.label + ' decisions</h2><span class="sync" id="sync"></span></div>' + budgetHtml(cyc) +
+      '<div class="deck-tools"><a class="btn btn-outline btn-sm" href="#/meeting">Board meeting mode</a>' +
+      (decided.length ? '<button class="btn btn-ghost btn-sm" id="summaryBtn" type="button">Results summary</button>' : '') + '</div>';
     if (it) {
       html += '<div class="deck-count"><span>' + (discussing ? '<b style="color:var(--warn)">Board discussion</b> · ' + plural(skipped.length, 'skipped app') : decided.length + ' decided') + '</span><span>' +
         (discussing ? '' : fresh.length + ' to review' + (skipped.length ? ' · ' + skipped.length + ' to discuss' : '')) + '</span></div>' + cardHtml(it, cyc, discussing);
     } else {
       html += '<div class="card done"><div class="big">✓</div><h3>All ' + cyc.items.length + ' applications decided</h3>' +
         '<p class="muted">' + cyc.nFunded + ' funded · ' + fmt(cyc.fundedSum) + ' awarded' + (cyc.left != null ? ' · ' + (cyc.left < 0 ? fmt(-cyc.left) + ' over budget' : fmt(cyc.left) + ' left') : '') + '</p>' +
-        '<a class="btn btn-outline" href="#/cycles/' + encodeURIComponent(cyc.name) + '">See the full sheet</a></div>';
+        '<button class="btn btn-green" id="summaryBtn2" type="button">Results summary</button></div>';
     }
     if (skipped.length) {
-      html += '<section class="decided"><div class="section-head"><h3>Discuss at board meeting (' + skipped.length + ')</h3><span class="small muted">Left blank in the Sheet</span></div><div class="card" style="padding:4px 4px">' +
+      html += '<section class="decided"><div class="section-head"><h3>Discuss at board meeting (' + skipped.length + ')</h3><span class="small muted">Tagged [Discuss] in Notes</span></div><div class="card" style="padding:4px 4px">' +
         skipped.map(function (d) {
           return '<div class="drow"><div class="o"><b>' + esc(d.org) + '</b><div>' + esc(d.project) + ' · ' + esc(d.ref) + '</div></div>' +
             '<div class="num" style="text-align:right"><b>' + fmt(d.requested) + '</b><br>' + chip('discuss') + '</div>' +
@@ -867,7 +935,7 @@
     }
     if (decided.length) {
       html += '<section class="decided"><div class="section-head"><h3>Decided (' + decided.length + ')</h3><span class="small muted">Tap Change to send one back to the deck</span></div><div class="card" style="padding:4px 4px">' +
-        decided.slice().reverse().map(function (d) {
+        decided.slice().sort(abcSort).map(function (d) {
           var st = status(d, cyc);
           return '<div class="drow"><div class="o"><b>' + esc(d.org) + '</b><div>' + esc(d.project) + ' · asked ' + fmt(d.requested) + '</div></div>' +
             '<div class="num" style="text-align:right">' + (d.funded > 0 ? '<b>' + fmt(d.funded) + '</b><br>' : '') + chip(st) + '</div>' +
@@ -876,17 +944,21 @@
     }
     v.innerHTML = html;
     setSync();
-    if (it) fillDocs(cyc, it, $('#ddocs'), true);
+    ['#summaryBtn', '#summaryBtn2'].forEach(function (id) { var b = $(id); if (b) b.addEventListener('click', function () { openSummary(cyc); }); });
     if (it) {
-      $('#bFund').addEventListener('click', function () { decide(it, it.requested); });
+      fillDocs(cyc, it, $('#ddocs'), true);
+      wireFund($('#bFund'), it, cyc);
       $('#bPart').addEventListener('click', function () { openPartial(it); });
       $('#bSkip').addEventListener('click', function () {
-        addSkip(it, cyc);
-        var row = it.row, org = it.org;
-        route(); window.scrollTo(0, 0);
-        toast('Saved for board discussion · ' + org, false, function () {
+        var row = it.row, org = it.org, wasOn = it.discuss;
+        if (wasOn) { // already in the discussion pile: move on to the next one (wraps around)
+          var i = skipped.indexOf(it), nxt = skipped[(i + 1) % skipped.length];
+          if (nxt && nxt !== it) { S.focusRow = nxt.row; route(); }
+        } else addSkip(it);
+        window.scrollTo(0, 0);
+        if (!wasOn) toast('Saved for board discussion · ' + org, false, function () {
           var x = S.current.items.filter(function (y) { return y.row === row; })[0];
-          if (x) { removeSkip(x, S.current); S.focusRow = row; route(); }
+          if (x) { removeSkip(x); S.focusRow = row; }
         });
       });
       var dec = $('#bDecline');
@@ -903,23 +975,29 @@
     });
   }
 
-  function budgetHtml(cyc) {
+  function budgetHtml(cyc, big) {
     var b = cyc.budget, over = b != null && cyc.left < 0;
     var pct = b ? Math.min(100, cyc.fundedSum / b * 100) : 0;
-    return '<div class="budget"><div class="budget-row">' +
+    var ask = remainingAsk(cyc), nPend = cyc.nPending;
+    var proj = '';
+    if (b != null && nPend) {
+      var after = cyc.left - ask;
+      proj = '<div class="proj-line">Funding all ' + nPend + ' remaining in full = <b class="num">' + fmt(ask) + '</b> · ' +
+        (after < 0 ? '<span class="over">over by ' + fmt(-after) + '</span>' : '<span class="ok">' + fmt(after) + ' would be left</span>') + '</div>';
+    }
+    return '<div class="budget' + (big ? ' big' : '') + '"><div class="budget-row">' +
       '<div><div class="label">Budget</div><div class="value num">' + (b != null ? fmt(b) : '—') + '</div></div>' +
       '<div><div class="label">Awarded</div><div class="value num">' + fmt(cyc.fundedSum) + '</div></div>' +
       '<div><div class="label">' + (over ? 'Over by' : 'Left') + '</div><div class="value num' + (over ? ' over' : '') + '">' + (b != null ? fmt(Math.abs(cyc.left)) : '—') + '</div></div>' +
-      '</div><div class="meter' + (over ? ' over' : '') + '"><div style="width:' + (over ? 100 : pct) + '%"></div></div></div>';
+      '</div><div class="meter' + (over ? ' over' : '') + '"><div style="width:' + (over ? 100 : pct) + '%"></div></div>' + proj + '</div>';
   }
 
   function cardHtml(it, cyc, discussing) {
     var share = it.cost ? Math.round(it.requested / it.cost * 100) : null;
     var g = S.groupByKey[canon(it.org)];
     var past = g ? g.apps.filter(function (a) { return a.cyc !== cyc; }) : [];
-    var hist;
-    if (!past.length) hist = '<div class="h">First-time applicant</div>';
-    else {
+    var hist = '';
+    if (past.length) {
       var nf = past.filter(function (a) { return a.it.funded > 0; });
       var tot = nf.reduce(function (s, a) { return s + a.it.funded; }, 0);
       hist = '<div class="h">' + (nf.length ? 'Funded ' + plural(nf.length, 'time') + ' before · ' + fmt(tot) : 'Applied ' + plural(past.length, 'time') + ' before, never funded') + '</div>' +
@@ -927,42 +1005,49 @@
           return '<span class="' + (a.it.funded > 0 ? 'f' : '') + '">' + a.cyc.short + ' · ' + (a.it.funded > 0 ? fmt(a.it.funded) : (a.it.funded === 0 ? 'not funded' : '—')) + '</span>';
         }).join('') + (past.length > 6 ? '<span>+' + (past.length - 6) + ' more</span>' : '') + '</div>';
     }
-    var overNote = cyc.left != null && it.requested > cyc.left ? '<small>exceeds ' + fmt(Math.max(0, cyc.left)) + ' left</small>' : '';
+    var overNote = cyc.left != null && it.requested > cyc.left + 0.005 ? '<small>over budget by ' + fmt(it.requested - cyc.left) + '</small>' : '';
     return '<article class="dcard">' +
       '<div class="dcard-top' + (discussing ? ' discuss' : '') + '"><h2>' + esc(it.org) + '</h2><div class="proj">' + esc(it.project) + '</div>' +
       (it.ref ? '<div class="ref">Reference: ' + esc(it.ref) + '</div>' : '') + '</div>' +
       '<div class="dfacts"><div><div class="label">Requested</div><div class="value num">' + fmt(it.requested) + '</div></div>' +
       '<div><div class="label">Project cost</div><div class="value num">' + (it.cost != null ? fmt(it.cost) : esc(it.costRaw || '—')) + '</div>' +
       (share != null ? '<div class="small muted">' + (share > 100 ? 'asks more than total cost' : share + '% of project') + '</div>' : '') + '</div></div>' +
+      '<div class="dhist dflags">' + flagsHtml(it, cyc) + '</div>' +
       '<div class="dhist" id="ddocs"></div>' +
       (it.notes ? '<div class="dhist"><div class="h">Notes</div>' + esc(it.notes) + '</div>' : '') +
-      '<div class="dhist">' + hist + '</div>' +
+      (hist ? '<div class="dhist">' + hist + '</div>' : '') +
       '<div class="dactions">' +
         '<button class="btn btn-fund" id="bFund">Fund ' + fmt(it.requested) + overNote + '</button>' +
         '<button class="btn btn-outline" id="bPart">Partially fund</button>' +
-        '<button class="btn btn-ghost" id="bSkip">' + (discussing ? 'Skip again<small>keep for discussion</small>' : 'Skip<small>discuss at board meeting</small>') + '</button>' +
+        '<button class="btn btn-ghost" id="bSkip">' + (discussing ? 'Next to discuss<small>keep for discussion</small>' : 'Skip<small>discuss at board meeting</small>') + '</button>' +
         '<button class="btn-link" id="bDecline" type="button">Not funding this one ($0)</button>' +
       '</div></article>';
   }
 
   function openPartial(it) {
-    var sh = $('#sheet');
+    var sh = $('#sheet'), cyc = S.current;
     var half = Math.round(it.requested / 2);
     var quick = [1000, 2500, half].filter(function (x, i, arr) { return x > 0 && x < it.requested && arr.indexOf(x) === i; }).sort(function (a, b) { return a - b; });
+    if (cyc.left != null && cyc.left > 0 && cyc.left < it.requested && quick.indexOf(Math.floor(cyc.left)) < 0) quick.push(Math.floor(cyc.left));
     sh.innerHTML = '<form class="sheet-panel" id="pform"><h3>Partially fund</h3><div class="muted small">' + esc(it.org) + ' · asked ' + fmt(it.requested) +
-      (S.current.left != null ? ' · ' + fmt(Math.max(0, S.current.left)) + ' left in budget' : '') + '</div>' +
+      (cyc.left != null ? ' · ' + fmt(Math.max(0, cyc.left)) + ' left in budget' : '') + '</div>' +
       '<div class="money-in"><span>$</span><input id="pamt" inputmode="decimal" placeholder="0" autocomplete="off" aria-label="Amount to fund"></div>' +
-      '<div class="quick">' + quick.map(function (q) { return '<button type="button" data-v="' + q + '">' + fmt(q) + '</button>'; }).join('') + '</div>' +
-      '<textarea id="pnote" placeholder="What it covers (optional — saved to Notes)">' + esc(it.notes && it.notes.indexOf(' · ') < 0 ? it.notes : '') + '</textarea>' +
+      '<div class="quick">' + quick.map(function (q) { return '<button type="button" data-v="' + q + '">' + (cyc.left != null && q === Math.floor(cyc.left) ? 'All that’s left · ' : '') + fmt(q) + '</button>'; }).join('') + '</div>' +
+      '<textarea id="pnote" placeholder="What it covers (optional — saved to Notes)">' + esc(it.noteCell || '') + '</textarea>' +
       '<p class="err-msg" id="perr"></p>' +
       '<div class="sheet-actions"><button type="button" class="btn btn-ghost" id="pcancel">Cancel</button><button class="btn btn-blue" type="submit">Save</button></div></form>';
     sh.hidden = false; $('#toast').hidden = true;
     var inp = $('#pamt');
     setTimeout(function () { inp.focus(); }, 60);
-    $$('.quick button', sh).forEach(function (b) { b.addEventListener('click', function () { inp.value = b.getAttribute('data-v'); inp.focus(); }); });
+    function check() {
+      var a = Number(String(inp.value).replace(/[$,\s]/g, ''));
+      $('#perr').textContent = cyc.left != null && a > cyc.left + 0.005 ? 'Heads up: that’s ' + fmt(a - cyc.left) + ' over what’s left.' : '';
+    }
+    inp.addEventListener('input', check);
+    $$('.quick button', sh).forEach(function (b) { b.addEventListener('click', function () { inp.value = b.getAttribute('data-v'); check(); inp.focus(); }); });
     function close() { sh.hidden = true; sh.innerHTML = ''; }
     $('#pcancel').addEventListener('click', close);
-    sh.addEventListener('click', function (e) { if (e.target === sh) close(); }, { once: true });
+    sh.onclick = function (e) { if (e.target === sh) close(); };
     $('#pform').addEventListener('submit', function (e) {
       e.preventDefault();
       var a = Number(String(inp.value).replace(/[$,\s]/g, ''));
@@ -971,8 +1056,84 @@
       a = Math.round(a * 100) / 100;
       var note = $('#pnote').value.trim();
       close();
-      decide(it, a, note || undefined);
+      decide(it, a, note);
     });
+  }
+
+  // ---------- BOARD MEETING MODE ----------
+  function renderMeeting(v) {
+    var cyc = S.current;
+    if (!cyc) { v.innerHTML = '<div class="card empty">No current cycle tab found.</div>'; return; }
+    var L = deckLists(cyc);
+    if (!S.meetScope) S.meetScope = L.skipped.length ? 'discuss' : 'all';
+    var list = S.meetScope === 'discuss' ? L.skipped : L.skipped.concat(L.fresh).sort(abcSort);
+    var d = S.docs[cyc.name];
+    if (!d) loadDocs(cyc).then(function () { if (/meeting/.test(location.hash) && $('#sheet').hidden) route(); });
+    var html = '<div class="meet-head"><div><span class="eyebrow">Board meeting</span><h2>' + cyc.label + '</h2></div><a class="btn btn-ghost btn-sm" href="#/decide">✕ Exit</a></div>' +
+      '<div class="meet-actions"><div class="seg" id="mseg"><button data-s="discuss" class="' + (S.meetScope === 'discuss' ? 'on' : '') + '">Discuss (' + L.skipped.length + ')</button>' +
+      '<button data-s="all" class="' + (S.meetScope === 'all' ? 'on' : '') + '">All undecided (' + L.pending.length + ')</button></div>' +
+      '<button class="btn btn-ghost btn-sm" id="msum" type="button">Results</button></div>' +
+      budgetHtml(cyc, true);
+    if (!list.length) {
+      html += '<div class="card done"><div class="big">✓</div><h3>' + (S.meetScope === 'discuss' ? 'Nothing left to discuss' : 'Everything is decided') + '</h3>' +
+        '<p class="muted">' + cyc.nFunded + ' funded · ' + fmt(cyc.fundedSum) + ' awarded</p><button class="btn btn-green" id="msum2" type="button">Results summary</button></div>';
+    } else {
+      html += '<div class="mgrid">' + list.map(function (it) {
+        var o = d && d.status === 'ok' && d.byRow[it.row];
+        var app = o && o.files.filter(function (f) { return /^ORU-/i.test(f.name); })[0];
+        var over = cyc.left != null && it.requested > cyc.left + 0.005;
+        return '<article class="mcard' + (it.discuss ? ' discuss' : '') + '" data-row="' + it.row + '">' +
+          '<div class="m-top"><div><h3>' + esc(it.org) + '</h3><div class="m-proj">' + esc(it.project) + '</div>' +
+          '<div class="small muted">' + esc(it.ref) + (it.cost != null ? ' · project ' + fmt(it.cost) : '') + '</div></div>' +
+          '<div class="m-ask num">' + fmt(it.requested) + '</div></div>' +
+          flagsHtml(it, cyc) +
+          (it.notes ? '<div class="m-note">' + esc(it.notes) + '</div>' : '') +
+          '<div class="m-links">' + (app ? '<a href="' + esc(app.url) + '" target="_blank" rel="noopener">Application ↗</a>' : '') +
+          '<button type="button" class="linkish" data-detail="' + it.row + '">Details & files</button></div>' +
+          '<div class="m-btns"><button class="btn btn-green" data-fund="' + it.row + '">' + (over ? 'Fund (over budget)' : 'Fund') + '</button>' +
+          '<button class="btn btn-outline" data-part="' + it.row + '">Partial</button>' +
+          '<button class="btn btn-ghost" data-no="' + it.row + '">Not funding</button></div></article>';
+      }).join('') + '</div>';
+    }
+    v.innerHTML = html;
+    function find(r) { return S.current.items.filter(function (x) { return x.row === +r; })[0]; }
+    $$('#mseg button').forEach(function (b) { b.addEventListener('click', function () { S.meetScope = b.getAttribute('data-s'); route(); }); });
+    ['#msum', '#msum2'].forEach(function (id) { var b = $(id); if (b) b.addEventListener('click', function () { openSummary(cyc); }); });
+    $$('[data-fund]', v).forEach(function (b) { var it = find(b.getAttribute('data-fund')); wireFund(b, it, cyc); });
+    $$('[data-part]', v).forEach(function (b) { b.addEventListener('click', function () { openPartial(find(b.getAttribute('data-part'))); }); });
+    $$('[data-no]', v).forEach(function (b) { b.addEventListener('click', function () { decide(find(b.getAttribute('data-no')), 0); }); });
+    $$('[data-detail]', v).forEach(function (b) { b.addEventListener('click', function () { openRow(cyc.name, +b.getAttribute('data-detail')); }); });
+  }
+
+  // ---------- RESULTS SUMMARY ----------
+  function openSummary(cyc) {
+    var funded = cyc.items.filter(function (it) { return it.funded > 0; }).sort(abcSort);
+    var declined = cyc.items.filter(function (it) { return it.funded === 0; }).sort(abcSort);
+    var pend = cyc.items.filter(function (it) { return it.funded == null; });
+    var title = 'JCREMC Operation Round-Up — ' + cyc.label + ' grant recipients';
+    var lines = funded.map(function (it) { return it.org + ' – ' + it.project + ' – ' + fmt(it.funded) + (it.funded < it.requested - 0.005 ? ' (of ' + fmt(it.requested) + ' requested)' : ''); });
+    var total = 'Total: ' + fmt(cyc.fundedSum) + ' to ' + plural(funded.length, 'organization');
+    var text = title + '\n\n' + lines.join('\n') + '\n\n' + total;
+    var tsv = ['Organization\tProject\tRequested\tFunded'].concat(funded.map(function (it) { return [it.org, it.project, it.requested.toFixed(2), it.funded.toFixed(2)].join('\t'); })).join('\n');
+    var html = '<span class="eyebrow">Results summary</span><h3 class="m-title">' + cyc.label + '</h3>' +
+      '<div class="sum-tiles"><div><b class="num">' + fmt(cyc.fundedSum) + '</b><span>awarded</span></div><div><b>' + funded.length + '</b><span>funded</span></div>' +
+      '<div><b>' + declined.length + '</b><span>not funded</span></div>' + (pend.length ? '<div class="warn"><b>' + pend.length + '</b><span>undecided</span></div>' : '') + '</div>' +
+      (pend.length ? '<p class="small" style="color:var(--warn);margin:0 0 10px">' + plural(pend.length, 'application is', 'applications are') + ' still undecided, so this list isn’t final yet.</p>' : '') +
+      '<div class="sum-list">' + (funded.length ? funded.map(function (it) {
+        return '<div class="sum-row"><div><b>' + esc(it.org) + '</b><span>' + esc(it.project) + '</span></div><div class="num">' + fmt(it.funded) +
+          (it.funded < it.requested - 0.005 ? '<small>of ' + fmt(it.requested) + '</small>' : '') + '</div></div>';
+      }).join('') : '<p class="muted">Nothing funded yet.</p>') + '</div>' +
+      (declined.length ? '<details class="sum-no"><summary>Not funded (' + declined.length + ')</summary>' + declined.map(function (it) { return '<div>' + esc(it.org) + ' <span class="muted">· ' + esc(it.project) + '</span></div>'; }).join('') + '</details>' : '') +
+      '<div class="sheet-actions"><button class="btn btn-ghost" type="button" id="cpTsv">Copy for spreadsheet</button><button class="btn btn-blue" type="button" id="cpTxt">Copy list</button></div>' +
+      '<p class="small muted" id="cpMsg" style="text-align:center;margin:8px 0 0"></p>';
+    openModal(html);
+    function copy(str, msg) {
+      function done() { $('#cpMsg').textContent = msg; }
+      function fallback() { var ta = document.createElement('textarea'); ta.value = str; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); done(); } catch (e) { $('#cpMsg').textContent = 'Couldn’t copy — select and copy manually.'; } ta.remove(); }
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(str).then(done, fallback); else fallback();
+    }
+    $('#cpTxt').addEventListener('click', function () { copy(text, 'Copied — paste into an email or doc.'); });
+    $('#cpTsv').addEventListener('click', function () { copy(tsv, 'Copied — paste into a spreadsheet.'); });
   }
 
   // Writes go out one at a time so the Sheet sees them in order.
@@ -982,44 +1143,75 @@
     s.className = 'sync' + (lastErr ? ' err' : '');
     s.textContent = inflight ? 'Saving to Sheet…' : (lastErr ? 'Last save failed' : (S.savedOnce ? 'Saved to Sheet ✓' : ''));
   }
+  function liveRoute() {
+    var typing = document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+    if ($('#sheet').hidden && !typing) route();
+  }
+  function send(action, payload, revert, label) {
+    inflight++; lastErr = ''; setSync();
+    queue = queue.then(function () {
+      return api(action, payload).then(function (res) {
+        inflight--; S.savedOnce = true;
+        if (!inflight && res.values) { replaceCurrent(res.values); liveRoute(); }
+        setSync();
+      }).catch(function (err) {
+        inflight--; lastErr = err.message;
+        revert(); recalc(S.current); buildGroups(); liveRoute();
+        toast('Couldn’t save ' + label + ': ' + err.message, true);
+        setSync();
+      });
+    });
+  }
+
+  function setDiscuss(it, on) {
+    var cyc = S.current, row = it.row;
+    it = cyc.items.filter(function (x) { return x.row === row; })[0] || it;
+    if (!!it.discuss === !!on) return;
+    var prev = it.discuss;
+    it.discuss = on; buildGroups(); liveRoute();
+    send('skip', { row: it.row, org: it.orgRaw, on: !!on }, function () { it.discuss = prev; }, it.org);
+  }
 
   function decide(it, amount, note, isUndo) {
     var cyc = S.current;
     var row = it.row;
     it = cyc.items.filter(function (x) { return x.row === row; })[0] || it; // objects are rebuilt after each save
-    var prev = it.funded, prevNotes = it.notes, prevCell = it.cells[cyc.C.fund];
-    var wasSkipped = isSkipped(it, cyc);
-    if (amount != null) removeSkip(it, cyc);
+    var prev = it.funded, prevNote = it.noteCell, prevNotes = it.notes, prevCell = it.cells[cyc.C.fund], wasSkipped = it.discuss;
     it.funded = amount;
-    if (typeof note === 'string') it.notes = note;
+    if (amount != null) it.discuss = false;
+    if (typeof note === 'string') { it.noteCell = note; it.notes = note; }
     it.cells[cyc.C.fund] = amount == null ? '' : fmt(amount, true);
     recalc(cyc); buildGroups();
     route();
     if (!isUndo) {
       var msg = amount > 0 ? (amount < it.requested ? 'Partial ' + fmt(amount) + ' · ' : 'Funded ' + fmt(amount) + ' · ') + it.org : 'Not funded · ' + it.org;
-      toast(msg, false, function () { if (wasSkipped) addSkip(it, cyc); S.focusRow = it.row; decide(it, prev, undefined, true); });
+      toast(msg, false, function () {
+        S.focusRow = it.row;
+        decide(it, prev, typeof note === 'string' ? prevNote : undefined, true);
+        if (wasSkipped) addSkip(it);
+      });
     }
-    inflight++; lastErr = ''; setSync();
     var payload = { row: it.row, org: it.orgRaw, amount: amount };
     if (typeof note === 'string') payload.note = note;
-    queue = queue.then(function () {
-      return api('decide', payload).then(function (res) {
-        inflight--; S.savedOnce = true;
-        if (!inflight && res.values) {
-          var onDecide = /decide/.test(location.hash) && $('#sheet').hidden;
-          replaceCurrent(res.values);
-          if (onDecide || !/decide/.test(location.hash)) route();
-        }
-        setSync();
-      }).catch(function (err) {
-        inflight--; lastErr = err.message;
-        it.funded = prev; it.notes = prevNotes; it.cells[cyc.C.fund] = prevCell;
-        recalc(cyc); buildGroups(); route();
-        toast('Couldn’t save ' + it.org + ': ' + err.message, true);
-        setSync();
-      });
-    });
+    send('decide', payload, function () {
+      it.funded = prev; it.noteCell = prevNote; it.notes = prevNotes; it.cells[cyc.C.fund] = prevCell; it.discuss = wasSkipped;
+    }, it.org);
   }
+
+  // Older versions kept skips on the device; move any of those into the Sheet once.
+  function migrateLocalSkips() {
+    var cyc = S.current; if (!cyc) return;
+    var key = 'oru.skip.' + cyc.name, raw = store.get(key); if (!raw) return;
+    store.del(key);
+    try {
+      JSON.parse(raw).forEach(function (k) {
+        var row = +String(k).split('|')[0];
+        var it = cyc.items.filter(function (x) { return x.row === row && k === x.row + '|' + x.org; })[0];
+        if (it && it.funded == null && !it.discuss) setDiscuss(it, true);
+      });
+    } catch (e) {}
+  }
+
 
   // ---------- toast ----------
   var toastT;
@@ -1036,7 +1228,14 @@
   // ---------- boot ----------
   $('#yr').textContent = new Date().getFullYear();
   if (S.pass && CFG.apiUrl) {
-    load().catch(function (e) { lock(e.message === 'Failed to fetch' ? 'Could not reach the Sheet. Check your connection.' : e.message); });
+    var cached = null;
+    try { cached = JSON.parse(store.get(CACHE_KEY) || 'null'); } catch (e) {}
+    if (cached && cached.tabs) { // show the last copy immediately, then refresh from the Sheet
+      ingest(cached); $('#lock').hidden = true; $('#app').hidden = false; route();
+      load(true).catch(function (e) { if (S.data) toast('Showing your saved copy — couldn’t refresh: ' + (e.message === 'Failed to fetch' ? 'offline?' : e.message), true); });
+    } else {
+      load().catch(function (e) { lock(e.message === 'Failed to fetch' ? 'Could not reach the Sheet. Check your connection.' : e.message); });
+    }
   } else {
     lock(CFG.apiUrl ? '' : 'Backend not connected yet — add the Apps Script URL to config.js.');
   }

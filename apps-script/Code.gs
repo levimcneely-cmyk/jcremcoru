@@ -6,10 +6,11 @@
  * - Set it from the Sheet menu: ORU Site → Set passcode…
  * - 10 wrong tries locks the site for 15 minutes.
  * - Reads application files from the shared Drive folders (needs Drive permission the first time).
- * - Writes allowed: CURRENT_TAB "Amount Funded", the "Notes" cell on any cycle tab, and the committee rows on BOARD_TAB.
+ * - Writes allowed: the current cycle's "Amount Funded" (and a [Discuss] tag in Notes), the "Notes" cell on any cycle tab, and the committee rows on BOARD_TAB.
  */
 
-const CURRENT_TAB = '2026 October';      // ← change each cycle (e.g. '2027 April')
+// 'auto' = the newest "YYYY April/October" tab is the current cycle. Or name a tab, e.g. '2026 October'.
+const CURRENT_TAB = 'auto';
 const BOARD_TAB = 'ORU Advisory Board';
 const CYCLE_RE = /^\d{4} (April|October)$/;
 const MAX_TRIES = 10;
@@ -63,6 +64,7 @@ function doPost(e) {
     if (body.action === 'board') return json_(board_(body));
     if (body.action === 'note') return json_(note_(body));
     if (body.action === 'docs') return json_(docs_(body));
+    if (body.action === 'skip') return json_(skip_(body));
     return json_({ ok: false, error: 'Unknown action' });
   } catch (err) {
     return json_({ ok: false, error: String((err && err.message) || err) });
@@ -92,32 +94,66 @@ function readAll_() {
     if (name !== BOARD_TAB && !CYCLE_RE.test(name)) return;
     tabs[name] = sh.getDataRange().getDisplayValues();
   });
-  return { tabs: tabs, currentTab: CURRENT_TAB, boardTab: BOARD_TAB, fetchedAt: new Date().toISOString() };
+  return { tabs: tabs, currentTab: currentTab_(), boardTab: BOARD_TAB, fetchedAt: new Date().toISOString() };
+}
+
+function currentTab_() {
+  const ss = SpreadsheetApp.getActive();
+  if (CURRENT_TAB !== 'auto' && ss.getSheetByName(CURRENT_TAB)) return CURRENT_TAB;
+  let best = null, bestKey = -1;
+  ss.getSheets().forEach(function (sh) {
+    const m = sh.getName().match(/^(\d{4}) (April|October)$/);
+    if (!m) return;
+    const k = Number(m[1]) * 100 + (m[2] === 'April' ? 4 : 10);
+    if (k > bestKey) { bestKey = k; best = sh.getName(); }
+  });
+  return best;
+}
+
+const DISCUSS_TAG_RE = /^\s*\[discuss\]\s*/i;
+
+/** Find + verify an application row on the current tab. Returns { sh, row, cAmt, cNote }. */
+function currentRow_(b) {
+  const tab = currentTab_();
+  const sh = tab && SpreadsheetApp.getActive().getSheetByName(tab);
+  if (!sh) throw new Error('No current cycle tab found');
+  const head = sh.getRange(1, 1, 1, sh.getLastColumn()).getDisplayValues()[0].map(function (h) { return String(h).trim().toLowerCase(); });
+  const cOrg = head.indexOf('organization') + 1, cAmt = head.indexOf('amount funded') + 1, cNote = head.indexOf('notes') + 1;
+  if (!cOrg || !cAmt) throw new Error('Could not find Organization / Amount Funded columns');
+  const row = Number(b.row);
+  if (!(row >= 2)) throw new Error('Bad row');
+  const colA = sh.getRange(1, 1, sh.getLastRow(), 1).getDisplayValues();
+  for (let i = 1; i < colA.length; i++) {
+    if (/^total/i.test(String(colA[i][0]).trim())) { if (row > i) throw new Error('Not an application row'); break; }
+  }
+  if (String(sh.getRange(row, cOrg).getDisplayValue()).trim() !== String(b.org || '').trim()) throw new Error('The sheet changed under you — refresh and try again.');
+  return { sh: sh, row: row, cAmt: cAmt, cNote: cNote, tab: tab };
+}
+
+/** Tag / untag an application for board discussion: "[Discuss] " at the start of Notes. */
+function skip_(b) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const r = currentRow_(b);
+    if (!r.cNote) throw new Error('No Notes column on this tab');
+    const cell = r.sh.getRange(r.row, r.cNote);
+    const rest = String(cell.getDisplayValue()).replace(DISCUSS_TAG_RE, '').trim();
+    cell.setValue(b.on ? ('[Discuss] ' + rest).trim() : rest);
+    SpreadsheetApp.flush();
+    return { ok: true, tab: r.tab, values: r.sh.getDataRange().getDisplayValues() };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function decide_(b) {
   const lock = LockService.getScriptLock();
   lock.waitLock(15000);
   try {
-    const sh = SpreadsheetApp.getActive().getSheetByName(CURRENT_TAB);
-    if (!sh) throw new Error('Current cycle tab "' + CURRENT_TAB + '" not found');
-    const lastCol = sh.getLastColumn();
-    const head = sh.getRange(1, 1, 1, lastCol).getDisplayValues()[0].map(function (h) { return String(h).trim().toLowerCase(); });
-    const cOrg = head.indexOf('organization') + 1;
-    const cAmt = head.indexOf('amount funded') + 1;
-    const cNote = head.indexOf('notes') + 1;
-    if (!cOrg || !cAmt) throw new Error('Could not find Organization / Amount Funded columns');
-
-    const row = Number(b.row);
-    if (!(row >= 2)) throw new Error('Bad row');
-    // Row must sit above the "Total Requested Funds" line.
-    const colA = sh.getRange(1, 1, sh.getLastRow(), 1).getDisplayValues();
-    for (let i = 1; i < colA.length; i++) {
-      if (/^total/i.test(String(colA[i][0]).trim())) { if (row > i) throw new Error('Not an application row'); break; }
-    }
-    const org = String(sh.getRange(row, cOrg).getDisplayValue()).trim();
-    if (org !== String(b.org || '').trim()) throw new Error('The sheet changed under you — refresh and try again.');
-
+    const r0 = currentRow_(b);
+    const sh = r0.sh;
+    const row = r0.row, cAmt = r0.cAmt, cNote = r0.cNote;
     const cell = sh.getRange(row, cAmt);
     if (b.amount === null || b.amount === '' || b.amount === undefined) {
       cell.clearContent();
@@ -126,9 +162,14 @@ function decide_(b) {
       if (!isFinite(a) || a < 0) throw new Error('Bad amount');
       cell.setValue(Math.round(a * 100) / 100).setNumberFormat('$#,##0.00');
     }
-    if (cNote && typeof b.note === 'string') sh.getRange(row, cNote).setValue(b.note);
+    if (cNote) {
+      const nc = sh.getRange(row, cNote);
+      let note = typeof b.note === 'string' ? b.note : String(nc.getDisplayValue());
+      if (b.amount !== null && b.amount !== '' && b.amount !== undefined) note = note.replace(DISCUSS_TAG_RE, ''); // decided → no longer "to discuss"
+      if (note !== String(nc.getDisplayValue())) nc.setValue(note.trim());
+    }
     SpreadsheetApp.flush();
-    return { ok: true, tab: CURRENT_TAB, values: sh.getDataRange().getDisplayValues() };
+    return { ok: true, tab: r0.tab, values: sh.getDataRange().getDisplayValues() };
   } finally {
     lock.releaseLock();
   }
